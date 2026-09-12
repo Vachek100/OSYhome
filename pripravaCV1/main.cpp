@@ -1,12 +1,12 @@
 //
 // Created by vasek on 9/12/26.
+// g++ -std=c++17 -O2 main.cpp -o main
 //
 
 #include <cstdio>
 #include <cstdlib>
 #include <ctime>
 #include <stdlib.h>
-#include <bits/locale_classes.h>
 
 int main(int argc, char** argv) {
 
@@ -80,34 +80,34 @@ int main(int argc, char** argv) {
         9931, 9941, 9949, 9967, 9973
     };
 
-    int arrPrimesSize = sizeof(primes) / sizeof(primes[0]);
+    int arrPrimesSize = sizeof(primes) / sizeof(primes[0]); //whole size of the array / size of single element in array
     int numSum = 0;
 
-    srand(time(NULL));
+    srand(time(NULL)); // more random seed
 
 
     const int colNum = atoi(argv[1]); // convert string to int
     int rowNum = 0;
 
-    if (argc < 2) {
+    if (argc < 2) { // ./main
         fprintf(stderr, "Pouziti %s cislo\n", argv[0]);
         return 1;
     }
 
-    if (argv[2] == NULL) {
+    if (argv[2] == NULL) {// ./main num NULL
         rowNum = colNum;
-    }else {
+    }else{
         rowNum = atoi(argv[2]);
     }
 
     for (int i = 0; i < rowNum; ++i) {
         for (int j = 0; j < colNum; ++j) {
             const int randomNum = rand() % arrPrimesSize;
-            numSum += primes[randomNum];
+            numSum += primes[randomNum]; // adds number every round to summary
             fprintf(stdout, "%d ", primes[randomNum]);
         }
-            fprintf(stdout, "%d\n", numSum);
-            numSum = 0;
+            fprintf(stdout, "   %d\n", numSum);
+            numSum = 0; // sets summary to 0 after printing it
     }
     return 0;
 }
