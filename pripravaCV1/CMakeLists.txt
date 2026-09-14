@@ -4,4 +4,5 @@ project(pripravaCV1)
 set(CMAKE_CXX_STANDARD 14)
 
 add_executable(pripravaCV1
-        main.cpp)
+        main.cpp
+        verprimes.cpp)
