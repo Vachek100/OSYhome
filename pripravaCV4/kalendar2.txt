@@ -1,0 +1,819 @@
+/*
+ * ============================================================
+ * KALENDAR2 - 2. VERZE
+ * ============================================================
+ *
+ * HLAVNÍ MYŠLENKA:
+ *
+ *                  RODIČ
+ *                 /     \
+ *                /       \
+ *         POTOMEK 1     POTOMEK 2
+ *          producer       consumer
+ *              |             ^
+ *              |             |
+ *              +--- PIPE ----+
+ *
+ *
+ * RODIČ:
+ *     - vytvoří prvního potomka
+ *     - vytvoří druhého potomka
+ *     - sám nic neprodukuje
+ *     - sám nic nekonzumuje
+ *     - pouze počká na oba potomky pomocí wait()
+ *
+ *
+ * POTOMEK 1:
+ *     - generuje náhodná data
+ *     - zapisuje je do pipe
+ *
+ *
+ * POTOMEK 2:
+ *     - čte data z pipe
+ *     - hledá datum v g_svatky
+ *     - vypisuje svátek
+ *
+ *
+ * ============================================================
+ * ARGUMENTY
+ * ============================================================
+ *
+ * ./kalendar2 M N
+ *
+ * M = počet datumů, které se mají vygenerovat
+ *
+ * N = počet datumů za sekundu
+ *
+ * Příklad:
+ *
+ *     ./kalendar2 10 2
+ *
+ * znamená:
+ *
+ *     10 datumů
+ *     přibližně 2 datumy za sekundu
+ *
+ *
+ * ============================================================
+ * PROCESY
+ * ============================================================
+ *
+ * Po spuštění máme 3 procesy:
+ *
+ *                  RODIČ
+ *                 /     \
+ *                /       \
+ *          CHILD 1      CHILD 2
+ *          producer     consumer
+ *
+ *
+ * DŮLEŽITÉ:
+ *
+ * Rodič vytváří oba potomky.
+ *
+ * Potomek 1 NESMÍ vytvořit potomka 2.
+ *
+ * Proto po dokončení práce potomka 1:
+ *
+ *     exit(EXIT_SUCCESS);
+ *
+ *
+ * ============================================================
+ * FORK()
+ * ============================================================
+ *
+ * pid_t child = fork();
+ *
+ * fork() vytvoří kopii aktuálního procesu.
+ *
+ * Návratová hodnota:
+ *
+ *     child < 0
+ *         chyba
+ *
+ *     child == 0
+ *         JSEM POTOMEK
+ *
+ *     child > 0
+ *         JSEM RODIČ
+ *         hodnota obsahuje PID potomka
+ *
+ *
+ * !!! VELMI DŮLEŽITÉ !!!
+ *
+ * Kód ZA fork() vykonávají oba procesy.
+ *
+ * Proto musíme dávat pozor, kam se který proces dostane.
+ *
+ *
+ * ============================================================
+ * DVA FORKY
+ * ============================================================
+ *
+ * Chceme:
+ *
+ *                  RODIČ
+ *                 /     \
+ *                /       \
+ *          CHILD 1      CHILD 2
+ *
+ *
+ * Proto:
+ *
+ *     fork()       -> vytvoří CHILD 1
+ *
+ *     exit()       -> CHILD 1 skončí
+ *
+ *     fork()       -> provede už pouze RODIČ
+ *
+ *                   -> vytvoří CHILD 2
+ *
+ *
+ * CHILD 1 musí po své práci skončit:
+ *
+ *     exit(EXIT_SUCCESS);
+ *
+ *
+ * Jinak by CHILD 1 pokračoval dál a mohl by provést
+ * druhý fork(), čímž by vznikly další procesy.
+ *
+ *
+ * ============================================================
+ * DŮLEŽITÁ STRUKTURA MAIN()
+ * ============================================================
+ *
+ *     pipe()
+ *
+ *       |
+ *       v
+ *
+ *     fork() ----> CHILD 1
+ *       |
+ *       |         producer()
+ *       |             |
+ *       |             |
+ *       |          write()
+ *       |             |
+ *       |             v
+ *       |            PIPE
+ *       |
+ *       v
+ *
+ *     RODIČ
+ *
+ *       |
+ *       v
+ *
+ *     fork() ----> CHILD 2
+ *                   |
+ *                   |
+ *                consumer()
+ *                   |
+ *                 read()
+ *                   ^
+ *                   |
+ *                  PIPE
+ *
+ *       |
+ *       v
+ *
+ *     wait()
+ *     wait()
+ *
+ *
+ * ============================================================
+ * PIPE
+ * ============================================================
+ *
+ * int mypipefd[2];
+ *
+ * pipe(mypipefd);
+ *
+ *     mypipefd[0] = ČTECÍ KONEC
+ *     mypipefd[1] = ZAPISOVACÍ KONEC
+ *
+ *
+ *     mypipefd[0] -> read()
+ *
+ *     mypipefd[1] -> write()
+ *
+ *
+ * PIPE MUSÍ BÝT VYTVOŘENA PŘED FORK()!
+ *
+ * Proč?
+ *
+ * Protože po fork() oba potomci zdědí deskriptory pipe.
+ *
+ *
+ * ============================================================
+ * KDO POUŽÍVÁ KTERÝ KONEC PIPE
+ * ============================================================
+ *
+ *
+ * RODIČ:
+ *
+ *     close(mypipefd[0]);
+ *     close(mypipefd[1]);
+ *
+ * Rodič pipe vůbec nepoužívá.
+ *
+ *
+ * CHILD 1 - PRODUCER:
+ *
+ *     close(mypipefd[0]);
+ *
+ *     producer(mypipefd[1], ...);
+ *
+ * Používá pouze ZAPISOVACÍ konec.
+ *
+ *
+ * CHILD 2 - CONSUMER:
+ *
+ *     close(mypipefd[1]);
+ *
+ *     consumer(mypipefd[0]);
+ *
+ * Používá pouze ČTECÍ konec.
+ *
+ *
+ * ============================================================
+ * TABULKA DESKRIPTORŮ
+ * ============================================================
+ *
+ *                  READ [0]       WRITE [1]
+ *
+ * RODIČ               X               X
+ *
+ * CHILD 1             X               OK
+ *
+ * CHILD 2             OK              X
+ *
+ *
+ * X = zavřeno
+ *
+ *
+ * !!! POZOR NA EOF !!!
+ *
+ * Aby consumer() dostal:
+ *
+ *     read() == 0
+ *
+ * musí být zavřené VŠECHNY zapisovací konce pipe.
+ *
+ * Proto musí zapisovací konec zavřít:
+ *
+ *     CHILD 1
+ *     RODIČ
+ *
+ *
+ * ============================================================
+ * EXIT()
+ * ============================================================
+ *
+ * Po práci potomka:
+ *
+ *     exit(EXIT_SUCCESS);
+ *
+ *
+ * Je důležité hlavně u CHILD 1.
+ *
+ * Bez exit():
+ *
+ *     CHILD 1
+ *          |
+ *          v
+ *     pokračuje dál
+ *          |
+ *          v
+ *     druhý fork()
+ *
+ * a mohli bychom vytvořit špatný počet procesů.
+ *
+ *
+ * ============================================================
+ * PRODUCER
+ * ============================================================
+ *
+ * producer():
+ *
+ *     1. vytvoří náhodné datum
+ *
+ *     2. zapíše datum do pipe pomocí write()
+ *
+ *     3. počká pomocí usleep()
+ *
+ *     4. opakuje M-krát
+ *
+ *
+ * Například:
+ *
+ *     "24.12.\n"
+ *
+ *
+ * ============================================================
+ * CONSUMER
+ * ============================================================
+ *
+ * consumer():
+ *
+ *     1. read() načte data z pipe
+ *
+ *     2. data uloží do bufferu
+ *
+ *     3. přidá je k remaining
+ *
+ *     4. hledá '\n'
+ *
+ *     5. oddělí jednotlivá data
+ *
+ *     6. projde g_svatky
+ *
+ *     7. pomocí strcmp() hledá shodu
+ *
+ *     8. vypíše datum a název svátku
+ *
+ *
+ * ============================================================
+ * READ()
+ * ============================================================
+ *
+ *     int ret = read(fd, buffer, velikost);
+ *
+ *
+ * ret < 0
+ *     chyba
+ *
+ * ret == 0
+ *     EOF
+ *
+ *     = zapisovací konec pipe je uzavřený
+ *     = už nejsou žádná další data
+ *     = NENÍ TO CHYBA
+ *
+ * ret > 0
+ *     počet přečtených bytů
+ *
+ *
+ * !!! POZOR !!!
+ *
+ * read() NEPŘIDÁ '\0'.
+ *
+ * Proto:
+ *
+ *     buffer[ret] = '\0';
+ *
+ * pokud chceme s bufferem pracovat jako s C-stringem.
+ *
+ *
+ * ============================================================
+ * WRITE()
+ * ============================================================
+ *
+ *     write(fd, buffer, strlen(buffer));
+ *
+ *
+ * zapisuje data do pipe.
+ *
+ * ret < 0
+ *     chyba
+ *
+ * ret >= 0
+ *     počet zapsaných bytů
+ *
+ *
+ * ============================================================
+ * PIPE NENÍ "JEDNA ZPRÁVA"
+ * ============================================================
+ *
+ * DŮLEŽITÉ:
+ *
+ *     1 write() != 1 read()
+ *
+ *
+ * Jedno read() může načíst více datumů:
+ *
+ *     "1.1.\n2.1.\n3.1.\n"
+ *
+ *
+ * Nebo může být datum rozděleno mezi dvě read():
+ *
+ *     první read():
+ *
+ *         "1.1.\n2."
+ *
+ *     druhý read():
+ *
+ *         "1.\n3.5.\n"
+ *
+ *
+ * Proto používáme:
+ *
+ *     remaining
+ *
+ * kde uchováváme neúplnou část dat.
+ *
+ *
+ * ============================================================
+ * REMAINING
+ * ============================================================
+ *
+ *     char remaining[1024] = "";
+ *
+ *
+ * remaining obsahuje data, která ještě nebyla kompletně
+ * zpracována.
+ *
+ *
+ * Příklad:
+ *
+ *     read():
+ *
+ *         "1.1.\n2."
+ *
+ * "1.1." můžeme zpracovat.
+ *
+ * "2." není kompletní datum.
+ *
+ * Proto:
+ *
+ *     remaining = "2."
+ *
+ *
+ * Při dalším read():
+ *
+ *     "1.\n3.5.\n"
+ *
+ * spojíme:
+ *
+ *     "2." + "1.\n3.5.\n"
+ *
+ * dostaneme:
+ *
+ *     "2.1.\n3.5.\n"
+ *
+ *
+ * ============================================================
+ * STRCHR()
+ * ============================================================
+ *
+ *     char *end = strchr(start, '\n');
+ *
+ *
+ * strchr() hledá první výskyt znaku v řetězci.
+ *
+ * Pokud najde:
+ *
+ *     vrací ukazatel na nalezený znak
+ *
+ * Pokud nenajde:
+ *
+ *     vrací nullptr
+ *
+ *
+ * ============================================================
+ * STRING FUNKCE
+ * ============================================================
+ *
+ * strcat(a, b)
+ *     přidá b na konec a
+ *
+ *
+ * strcpy(a, b)
+ *     zkopíruje b do a
+ *
+ *
+ * strcmp(a, b)
+ *     porovná dva řetězce
+ *
+ *     == 0
+ *         řetězce jsou stejné
+ *
+ *
+ * strchr(a, c)
+ *     hledá znak c v řetězci a
+ *
+ *
+ * ============================================================
+ * G_SVATKY
+ * ============================================================
+ *
+ * g_svatky[i][0]
+ *     datum
+ *
+ * g_svatky[i][1]
+ *     název svátku
+ *
+ *
+ * Například:
+ *
+ *     g_svatky[0][0] -> "1.1."
+ *     g_svatky[0][1] -> "Novy rok"
+ *
+ *
+ * Konec pole:
+ *
+ *     { nullptr, nullptr }
+ *
+ * tomu říkáme SENTINEL
+ *
+ *
+ * Proto:
+ *
+ *     g_svatky[i][0] != nullptr
+ *
+ * znamená:
+ *
+ *     "ještě nejsme na konci seznamu"
+ *
+ *
+ * ============================================================
+ * NÁHODNÉ DATUM
+ * ============================================================
+ *
+ *     month = rand() % 12 + 1;
+ *
+ * vytvoří měsíc:
+ *
+ *     1 až 12
+ *
+ *
+ *     daysInMonth[month - 1]
+ *
+ * určí počet dní v daném měsíci.
+ *
+ *
+ *     day = rand() % maxDaysInMonth + 1;
+ *
+ * vytvoří den:
+ *
+ *     1 až počet dní v měsíci
+ *
+ *
+ * Například:
+ *
+ *     month = 2
+ *
+ *     daysInMonth[1] = 28
+ *
+ *     day = 1 až 28
+ *
+ *
+ * ============================================================
+ * USLEEP()
+ * ============================================================
+ *
+ * usleep() používá mikrosekundy.
+ *
+ *     1 sekunda = 1 000 000 mikrosekund
+ *
+ *
+ *     delay = 1000000 / N;
+ *
+ *
+ * N = 2:
+ *
+ *     500000 us
+ *     = 0,5 sekundy
+ *
+ *
+ * N = 10:
+ *
+ *     100000 us
+ *     = 0,1 sekundy
+ *
+ *
+ * ============================================================
+ * WAIT()
+ * ============================================================
+ *
+ * Rodič:
+ *
+ *     wait(nullptr);
+ *     wait(nullptr);
+ *
+ *
+ * protože má dva potomky.
+ *
+ *
+ * DŮLEŽITÉ:
+ *
+ * wait() se provádí AŽ PO VYTVOŘENÍ OBOU POTOMKŮ.
+ *
+ *
+ * SPRÁVNĚ:
+ *
+ *     fork() -> CHILD 1
+ *     fork() -> CHILD 2
+ *     wait()
+ *     wait()
+ *
+ *
+ * ŠPATNĚ:
+ *
+ *     fork() -> CHILD 1
+ *     wait()
+ *     fork() -> CHILD 2
+ *
+ *
+ * V druhém případě rodič nejdříve čeká na CHILD 1
+ * a teprve potom vytváří CHILD 2.
+ *
+ *
+ * ============================================================
+ * CO NEDĚLAT
+ * ============================================================
+ *
+ * 1. NEDĚLAT fork() před pipe()
+ *
+ *     ŠPATNĚ:
+ *
+ *         fork();
+ *         pipe();
+ *
+ *
+ *     SPRÁVNĚ:
+ *
+ *         pipe();
+ *         fork();
+ *
+ *
+ * 2. NEDOVOLIT CHILD 1 PROVÉST DRUHÝ FORK()
+ *
+ *     Po producer():
+ *
+ *         exit(EXIT_SUCCESS);
+ *
+ *
+ * 3. NEDÁVAT wait() MEZI DVA FORKY
+ *
+ *     Nejprve vytvořit oba potomky.
+ *
+ *
+ * 4. RODIČ NESMÍ ČÍST ANI ZAPISOVAT
+ *
+ *     Jeho práce:
+ *
+ *         vytvořit potomky
+ *         zavřít pipe
+ *         wait()
+ *         wait()
+ *
+ *
+ * 5. CHILD 1 NESMÍ ČÍST
+ *
+ *     zavřít:
+ *
+ *         mypipefd[0]
+ *
+ *
+ * 6. CHILD 2 NESMÍ ZAPISOVAT
+ *
+ *     zavřít:
+ *
+ *         mypipefd[1]
+ *
+ *
+ * 7. NEZAPOMENOUT NA CLOSE()
+ *
+ *     Špatně zavřené deskriptory mohou způsobit,
+ *     že consumer() nikdy nedostane EOF.
+ *
+ *
+ * ============================================================
+ * KONTROLA PROCESŮ
+ * ============================================================
+ *
+ * Před druhým fork():
+ *
+ *             RODIČ
+ *                |
+ *                |
+ *             fork()
+ *             /    \
+ *            /      \
+ *         CHILD 1   RODIČ
+ *
+ *
+ * CHILD 1:
+ *
+ *     producer()
+ *     close()
+ *     exit()
+ *
+ *
+ * RODIČ:
+ *
+ *     pokračuje dál
+ *     fork()
+ *
+ *
+ * Po druhém fork():
+ *
+ *             RODIČ
+ *            /     \
+ *           /       \
+ *      CHILD 1    CHILD 2
+ *
+ *
+ * ============================================================
+ * KONEČNÉ ROZDĚLENÍ PIPE
+ * ============================================================
+ *
+ *
+ *              PIPE
+ *          +-----------+
+ *          |           |
+ *       READ [0]    WRITE [1]
+ *          ^           |
+ *          |           |
+ *      CHILD 2      CHILD 1
+ *      consumer     producer
+ *
+ *
+ * RODIČ:
+ *
+ *     READ  -> close()
+ *     WRITE -> close()
+ *
+ *
+ * CHILD 1:
+ *
+ *     READ  -> close()
+ *     WRITE -> používá
+ *
+ *
+ * CHILD 2:
+ *
+ *     READ  -> používá
+ *     WRITE -> close()
+ *
+ *
+ * ============================================================
+ * HLAVNÍ VZOREC PRO ÚLOHY S DVĚMA POTOMKY
+ * ============================================================
+ *
+ *     pipe()
+ *       |
+ *       v
+ *     fork()
+ *       |
+ *       +----------> CHILD 1
+ *       |              |
+ *       |           producer
+ *       |              |
+ *       |            write
+ *       |
+ *       v
+ *     RODIČ
+ *       |
+ *     fork()
+ *       |
+ *       +----------> CHILD 2
+ *                      |
+ *                   consumer
+ *                      |
+ *                     read
+ *
+ *
+ *     RODIČ:
+ *
+ *         close()
+ *         close()
+ *         wait()
+ *         wait()
+ *
+ *
+ * ============================================================
+ * NEJDŮLEŽITĚJŠÍ VĚCI K ZAPAMATOVÁNÍ
+ * ============================================================
+ *
+ * 1. pipe() před fork()
+ *
+ * 2. fork() vytvoří nový proces
+ *
+ * 3. child == 0 -> potomek
+ *
+ * 4. child != 0 -> rodič
+ *
+ * 5. CHILD 1 -> producer -> write()
+ *
+ * 6. CHILD 2 -> consumer -> read()
+ *
+ * 7. RODIČ -> nic nepřenáší, pouze wait()
+ *
+ * 8. Po práci CHILD 1 -> exit()
+ *
+ * 9. Nejprve vytvořit oba potomky, potom wait()
+ *
+ * 10. Každý proces zavře nepotřebný konec pipe
+ *
+ * 11. read() == 0 -> EOF, není chyba
+ *
+ * 12. read() nepřidává '\0'
+ *
+ * 13. 1 write() nemusí znamenat 1 read()
+ *
+ * 14. remaining slouží k uchování neúplného data
+ *
+ * ============================================================
+ */

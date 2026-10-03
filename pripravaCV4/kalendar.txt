@@ -1,0 +1,422 @@
+/*
+ * ============================================================
+ * SVATKY - 1. VERZE
+ * ============================================================
+ *
+ * HLAVNÍ MYŠLENKA:
+ *
+ *        RODIČ
+ *       /     \
+ *      /       \
+ *  consumer   producer
+ *      ^          |
+ *      |          |
+ *      +--- PIPE -+
+ *
+ * Rodič = čte z pipe a zpracovává data
+ * Potomek = generuje náhodná data a zapisuje je do pipe
+ *
+ *
+ * ============================================================
+ * ARGUMENTY
+ * ============================================================
+ *
+ * ./svatky M N
+ *
+ * M = kolik datumů má potomek vygenerovat
+ * N = kolik datumů za sekundu má generovat
+ *
+ * Příklad:
+ *
+ * ./svatky 10 2
+ *
+ * -> vygeneruje 10 datumů
+ * -> přibližně 2 datumy za sekundu
+ * -> mezi daty je delay 1000000 / N mikrosekund
+ *
+ *
+ * ============================================================
+ * PIPE
+ * ============================================================
+ *
+ * int mypipefd[2];
+ *
+ * pipe(mypipefd);
+ *
+ * mypipefd[0] = ČTECÍ KONEC
+ * mypipefd[1] = ZAPISOVACÍ KONEC
+ *
+ * write(mypipefd[1], ...) -> zapisuje do pipe
+ * read(mypipefd[0], ...)  -> čte z pipe
+ *
+ *
+ * PO FORK() MAJÍ RODIČ I POTOMEK KOPIE DESKRIPTORŮ!
+ *
+ * Proto každý proces musí zavřít konec pipe, který nepoužívá.
+ *
+ * RODIČ:
+ *     close(mypipefd[1]);   // nezapisuje
+ *     consumer(mypipefd[0]);
+ *
+ * POTOMEK:
+ *     close(mypipefd[0]);   // nečte
+ *     producer(mypipefd[1], ...);
+ *
+ *
+ * !!! DŮLEŽITÉ !!!
+ *
+ * Pokud zapomenu zavřít nepotřebný konec pipe,
+ * může druhý proces čekat na EOF a program se nemusí ukončit.
+ *
+ *
+ * ============================================================
+ * FORK()
+ * ============================================================
+ *
+ * pid_t child = fork();
+ *
+ * fork() vytvoří kopii procesu.
+ *
+ * Návratová hodnota:
+ *
+ * child < 0
+ *     chyba
+ *
+ * child == 0
+ *     JSEM POTOMEK
+ *
+ * child > 0
+ *     JSEM RODIČ
+ *     hodnota = PID potomka
+ *
+ *
+ * POZOR:
+ *
+ * Kód ZA fork() vykonávají OBA procesy,
+ * pokud jeden z nich není ukončen / odkloněn.
+ *
+ *
+ * ============================================================
+ * EXIT PO PRÁCI POTOMKA
+ * ============================================================
+ *
+ * Pokud potomek udělá svou práci a program pokračuje dál,
+ * může nechtěně provést další fork() nebo jiný kód rodiče.
+ *
+ * Proto může být potřeba:
+ *
+ *     exit(EXIT_SUCCESS);
+ *
+ * na konci práce potomka.
+ *
+ * U 1. verze to není nutné kvůli dalšímu fork(),
+ * ale u dalších verzí se na to musí dávat velký pozor.
+ *
+ *
+ * ============================================================
+ * READ()
+ * ============================================================
+ *
+ * int ret = read(fd, buffer, velikost);
+ *
+ * ret < 0
+ *     chyba při čtení
+ *
+ * ret == 0
+ *     EOF
+ *     = pipe byla uzavřena
+ *     = zapisovací konec už nikdo nemá otevřený
+ *     = NENÍ TO CHYBA
+ *
+ * ret > 0
+ *     počet skutečně přečtených bytů
+ *
+ *
+ * !!! POZOR !!!
+ *
+ * read() NEPŘIDÁVÁ automaticky '\0' na konec řetězce.
+ *
+ * Proto:
+ *
+ *     buffer[ret] = '\0';
+ *
+ * pokud chceme s daty pracovat jako s C-stringem.
+ *
+ *
+ * ============================================================
+ * WRITE()
+ * ============================================================
+ *
+ * int ret = write(fd, buffer, strlen(buffer));
+ *
+ * write() zapisuje data do pipe.
+ *
+ * ret < 0
+ *     chyba
+ *
+ * ret >= 0
+ *     počet zapsaných bytů
+ *
+ *
+ * ============================================================
+ * PIPE NENÍ "ZPRÁVA"
+ * ============================================================
+ *
+ * read() nemusí vrátit přesně jedno datum!
+ *
+ * Může přijít například:
+ *
+ *     "1.1.\n"
+ *
+ * nebo:
+ *
+ *     "1.1.\n2.1.\n3.1.\n"
+ *
+ * nebo se jedno datum může rozdělit:
+ *
+ *     "1.1.\n2."
+ *
+ * a při dalším read():
+ *
+ *     "1.\n3.5.\n"
+ *
+ * Proto máme:
+ *
+ *     remaining
+ *
+ * kam ukládáme neúplnou část dat.
+ *
+ *
+ * ============================================================
+ * STRING FUNKCE
+ * ============================================================
+ *
+ * strcat(a, b)
+ *     přidá b na konec a
+ *
+ * strcpy(a, b)
+ *     zkopíruje b do a
+ *
+ * strcmp(a, b)
+ *     porovná dva řetězce
+ *
+ *     == 0  -> řetězce jsou stejné
+ *
+ * strchr(a, '\n')
+ *     najde první výskyt '\n'
+ *
+ *     vrací ukazatel na nalezený znak
+ *     nebo nullptr, pokud ho nenajde
+ *
+ *
+ * ============================================================
+ * ZPRACOVÁNÍ DAT V CONSUMER()
+ * ============================================================
+ *
+ * 1. read() načte data z pipe
+ *
+ * 2. buffer[ret] = '\0'
+ *    -> uděláme z dat C-string
+ *
+ * 3. strcat(remaining, buffer)
+ *    -> přidáme nově načtená data k případnému zbytku
+ *
+ * 4. strchr(start, '\n')
+ *    -> hledáme konec jednoho data
+ *
+ * 5. *end = '\0'
+ *    -> oddělíme datum od '\n'
+ *
+ * 6. projdeme g_svatky
+ *
+ * 7. strcmp()
+ *    -> hledáme odpovídající datum
+ *
+ * 8. vypíšeme datum + jméno svátku
+ *
+ * 9. start = end + 1
+ *    -> přesuneme se na další datum
+ *
+ * 10. strcpy(remaining, start)
+ *     -> případný neúplný zbytek necháme pro další read()
+ *
+ *
+ * ============================================================
+ * g_SVATKY
+ * ============================================================
+ *
+ * g_svatky[i][0] = datum
+ * g_svatky[i][1] = název svátku
+ *
+ * Například:
+ *
+ * g_svatky[0][0] -> "1.1."
+ * g_svatky[0][1] -> "Novy rok"
+ *
+ * g_svatky[i][0] != nullptr
+ *     -> dokud nejsme na konci seznamu
+ *
+ * { nullptr, nullptr }
+ *     -> SENTINEL = označuje konec pole
+ *
+ *
+ * ============================================================
+ * NÁHODNÉ DATUM
+ * ============================================================
+ *
+ * daysInMonth[]:
+ *
+ * měsíc       index
+ * 1           0
+ * 2           1
+ * 3           2
+ * ...
+ * 12          11
+ *
+ * month = rand() % 12 + 1;
+ *     -> 1 až 12
+ *
+ * daysInMonth[month - 1]
+ *     -> počet dní daného měsíce
+ *
+ * day = rand() % maxDaysInMonth + 1;
+ *     -> 1 až počet dní v měsíci
+ *
+ *
+ * ============================================================
+ * RANDOM
+ * ============================================================
+ *
+ * srand(time(NULL));
+ *     -> nastaví seed náhodných čísel
+ *
+ * rand()
+ *     -> generuje náhodné číslo
+ *
+ * POZOR:
+ *
+ * srand() stačí volat jednou.
+ *
+ *
+ * ============================================================
+ * USLEEP
+ * ============================================================
+ *
+ * usleep() používá mikrosekundy.
+ *
+ * 1 sekunda = 1 000 000 mikrosekund
+ *
+ * delay = 1000000 / N;
+ *
+ * N = 2
+ * -> 500000 us
+ * -> 0,5 sekundy
+ *
+ * N = 10
+ * -> 100000 us
+ * -> 0,1 sekundy
+ *
+ *
+ * ============================================================
+ * WAIT()
+ * ============================================================
+ *
+ * wait(nullptr);
+ *
+ * rodič čeká na ukončení potomka.
+ *
+ * POZOR:
+ *
+ * wait() patří rodiči.
+ *
+ * Potomek nemá čekat sám na sebe.
+ *
+ *
+ * ============================================================
+ * CO SI HLÍDAT U FORK + PIPE
+ * ============================================================
+ *
+ * 1. pipe() MUSÍ být před fork()
+ *
+ *    pipe();
+ *    fork();
+ *
+ *    aby oba procesy zdědily deskriptory pipe.
+ *
+ *
+ * 2. Po fork() si uvědomit:
+ *
+ *    "Kdo jsem? Rodič nebo potomek?"
+ *
+ *    child == 0       -> potomek
+ *    child != 0       -> rodič
+ *
+ *
+ * 3. Každý proces zavře konec pipe,
+ *    který nepotřebuje.
+ *
+ *
+ * 4. EOF z read():
+ *
+ *    ret == 0
+ *
+ *    není chyba.
+ *
+ *
+ * 5. read() nemusí načíst celý logický údaj.
+ *
+ *    Proto nemůžu automaticky předpokládat:
+ *
+ *    1 read() = 1 datum
+ *
+ *
+ * 6. read() nepřidává '\0'.
+ *
+ *    Pokud používám strlen(), strcmp(), strchr() atd.,
+ *    musím mít správně ukončený C-string.
+ *
+ *
+ * 7. Po fork() dávat pozor na další kód.
+ *
+ *    Pokud nechci, aby potomek pokračoval dál,
+ *    použít exit().
+ *
+ *
+ * 8. Rodič musí čekat na potomka pomocí wait(),
+ *    pokud zadání vyžaduje jeho ukončení / synchronizaci.
+ *
+ *
+ * 9. POZOR NA DIVIZI:
+ *
+ *    delay = 1000000 / dateCountPerSecond;
+ *
+ *    N nesmí být 0.
+ *
+ *
+ * 10. POZOR NA BUFFER:
+ *
+ *     buffer musí být dostatečně velký pro generované datum.
+ *
+ *
+ * ============================================================
+ * NEJDŮLEŽITĚJŠÍ VZOREC PRO ÚLOHY
+ * ============================================================
+ *
+ *     pipe()
+ *       |
+ *     fork()
+ *      / \
+ *     /   \
+ * rodič  potomek
+ *   |       |
+ * close W  close R
+ * read     write
+ *   |       |
+ * consumer producer
+ *   |       |
+ * close    close
+ *   |
+ * wait()
+ *
+ * ============================================================
+ */
