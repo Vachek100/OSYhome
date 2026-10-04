@@ -39,7 +39,7 @@ void generateRandomDate(char *buffer) {
 }
 
 
-void producer(int fd, int dateCountToGenerate, int dateCountPerSecond) {
+void producerAndGenerator(int fd, int dateCountToGenerate, int dateCountPerSecond) {
 
     char buffer[20];
 
@@ -154,7 +154,7 @@ int main(int argc, char **argv) {
         // CHILD
         close(mypipefd[0]);
 
-        producer(
+        producerAndGenerator(
             mypipefd[1],
             dateCountToGenerate,
             dateCountPerSecond

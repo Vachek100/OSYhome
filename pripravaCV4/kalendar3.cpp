@@ -65,7 +65,7 @@ void producerAndGenerator(int fd, int dateCountToGenerate, int dateCountPerSecon
 }
 
 
-void middleman(int readFd, int writeFd) {
+void middleman(int readFd, int writeFdB) {
 
     char buffer[1024];
     char remaining[1024] = "";
@@ -107,7 +107,7 @@ void middleman(int readFd, int writeFd) {
 
                         sprintf(output, "%s %s\n", start, g_svatky[i][1]);
 
-                        int ret = write(writeFd, output, strlen(output));
+                        int ret = write(writeFdB, output, strlen(output));
 
                         if (ret < 0) {
                             perror("Unable to write to pipe");
