@@ -1,0 +1,41 @@
+void consumer(int fd) {
+
+    char buffer[1024];
+    char remaining[1024] = "";
+
+    while (1) {
+
+        int ret = read(fd, buffer, sizeof(buffer) - 1);
+
+        if (ret < 0) {
+            perror("Unable to read from pipe");
+            exit(EXIT_FAILURE);
+        }
+        else if (ret == 0) {
+            exit(EXIT_SUCCESS);
+        }
+
+        buffer[ret] = '\0';
+
+        strcat(remaining, buffer);
+
+        char *start = remaining;
+
+        while (1) {
+
+            char *end = strchr(start, '\n');
+
+            if (end == nullptr) {
+                break;
+            }
+
+            *end = '\0';
+
+            // TADY SE MĚNÍ TO, CO S ŘÁDKEM UDĚLÁŠ
+
+            start = end + 1;
+        }
+
+        strcpy(remaining, start);
+    }
+}
