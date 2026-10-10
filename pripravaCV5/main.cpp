@@ -27,9 +27,60 @@
 #include <time.h>
 #include <fcntl.h>
 
+void consumer(int readFd) {
+    char buffer[1024];
+    char remaining[1024] = "";
+    int numLines = 1;
+
+    while (1) {
+
+        int ret = read(readFd, buffer, sizeof(buffer) - 1);
+
+        if (ret < 0) {
+            perror("Consumer function: Unable to read from pipe");
+            exit(EXIT_FAILURE);
+        }
+        else if (ret == 0) {
+            //printf("Consumer function: Pipe closed. Why?\n");
+            exit(EXIT_SUCCESS);
+        }
+
+        buffer[ret] = '\0';
+
+        strcat(remaining, buffer);
+
+        char *start = remaining;
+
+        while (1) {
+
+            char *end = strchr(start, '\n');
+
+            if (end == nullptr) {
+                break;
+            }
+
+            *end = '\0';
+
+            fprintf(stdout, "%6d. %s\n", numLines, start);
+
+            numLines++;
+
+            start = end + 1;
+        }
+
+        strcpy(remaining, start);
+
+    }
+}
+
 int main(int argc, char **argv) {
 
-    const char *filename = argv[1];
+    if (argc != 2 && argc != 3) {
+        fprintf(stderr, "Usage: %s input_file [output_file]\n", argv[0]);
+        return EXIT_FAILURE;
+    }
+
+    //const char *filename = argv[1];
 
     int mypipefdA[2];
     int mypipefdB[2];
@@ -63,10 +114,10 @@ int main(int argc, char **argv) {
         close(mypipefdB[0]);
         close(mypipefdB[1]);
 
-        int file = open(filename, O_RDONLY);
+        int file = open(argv[1], O_RDONLY);
 
         if (file < 0) {
-            perror("Unable to open file for reading");
+            perror("Unable to open input file for reading");
             exit(EXIT_FAILURE);
         }
 
@@ -85,7 +136,7 @@ int main(int argc, char **argv) {
         execvp("sort", args);
 
         perror("execvp sort");
-        exit(EXIT_FAILURE);
+        exit(EXIT_SUCCESS);
 
 
     }
@@ -106,6 +157,21 @@ int main(int argc, char **argv) {
 
     }else {
         // CHILD 2
+
+        close(mypipefdA[1]);
+        close(mypipefdB[0]);
+
+        dup2(mypipefdA[0], STDIN_FILENO);
+        dup2(mypipefdB[1], STDOUT_FILENO);
+
+        consumer(mypipefdA[0]);
+
+        close(mypipefdA[0]);
+        close(mypipefdB[1]);
+
+        exit(EXIT_FAILURE);
+
+        /*
         close(mypipefdA[1]);
         close(mypipefdB[0]);
 
@@ -126,7 +192,7 @@ int main(int argc, char **argv) {
 
         perror("execvp nl");
         exit(EXIT_FAILURE);
-
+    */
     }
 
     // PARENT ONLY CODE
@@ -152,6 +218,26 @@ int main(int argc, char **argv) {
         dup2(mypipefdB[0], STDIN_FILENO);
 
         close(mypipefdB[0]);
+
+        if (argc == 3) {
+            int file = open(argv[2], O_WRONLY | O_CREAT | O_TRUNC, 0644);
+
+            if (file < 0) {
+                perror("Unable to open output file for writing");
+                exit(EXIT_FAILURE);
+            }
+
+            if (dup2(file, STDOUT_FILENO) < 0) {
+                perror("dup2 stdout to outputfile");
+                close(file);
+                exit(EXIT_FAILURE);
+            }
+
+            close(file);
+
+            close(file);
+
+        }
 
 
         char *args[] = {
