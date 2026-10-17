@@ -1,0 +1,186 @@
+void consumer(int fd) {
+
+    char buffer[1024];
+    char remaining[1024] = "";
+
+    while (1) {
+
+        int ret = read(fd, buffer, sizeof(buffer) - 1);
+
+        if (ret < 0) {
+            perror("Unable to read from pipe");
+            exit(EXIT_FAILURE);
+        }
+        else if (ret == 0) {
+            exit(EXIT_SUCCESS);
+        }
+
+        buffer[ret] = '\0';
+
+        strcat(remaining, buffer);
+
+        char *start = remaining;
+
+        while (1) {
+
+            char *end = strchr(start, '\n');
+
+            if (end == nullptr) {
+                break;
+            }
+
+            *end = '\0';
+
+            // TADY SE MĚNÍ TO, CO S ŘÁDKEM UDĚLÁŠ
+
+            start = end + 1;
+        }
+
+        strcpy(remaining, start);
+    }
+}
+
+int hexValue(char c) {
+    if (c >= '0' && c <= '9') {
+        return c - '0';
+    }
+
+    if (c >= 'A' && c <= 'F') {
+        return c - 'A' + 10;
+    }
+
+    if (c >= 'a' && c <= 'f') {
+        return c - 'a' + 10;
+    }
+
+    return -1;
+}
+
+void decodeHex() {
+    char buffer[1024];
+    int firstValue = -1;
+
+    while (1) {
+        int ret = read(STDIN_FILENO, buffer, sizeof(buffer));
+
+        if (ret < 0) {
+            perror("read hex input");
+            exit(EXIT_FAILURE);
+        }
+
+        if (ret == 0) {
+            break;
+        }
+
+        for (int i = 0; i < ret; i++) {
+            char c = buffer[i];
+
+            // Přeskočí mezery a konce řádků.
+            if (c == ' ' || c == '\n' ||
+                c == '\r' || c == '\t') {
+                continue;
+                }
+
+            int value = hexValue(c);
+
+            if (value < 0) {
+                fprintf(stderr, "Invalid hex character: %c\n", c);
+                exit(EXIT_FAILURE);
+            }
+
+            if (firstValue == -1) {
+
+                firstValue = value;
+            } else {
+
+                unsigned char byte = firstValue * 16 + value;
+                firstValue = -1;
+
+                int written = 0;
+
+                while (written < 1) {
+                    int result = write(
+                        STDOUT_FILENO,
+                        &byte + written,
+                        1 - written
+                    );
+
+                    if (result < 0) {
+                        perror("write decoded byte");
+                        exit(EXIT_FAILURE);
+                    }
+
+                    if (result == 0) {
+                        fprintf(stderr, "write returned 0\n");
+                        exit(EXIT_FAILURE);
+                    }
+
+                    written += result;
+                }
+            }
+        }
+    }
+
+    if (firstValue != -1) {
+        fprintf(stderr, "Incomplete hex pair at end of input\n");
+        exit(EXIT_FAILURE);
+    }
+
+    exit(EXIT_SUCCESS);
+}
+
+
+int mycut(int argc, char **argv) {
+
+
+    char buffer[1024];
+    char remaining[1024] = "";
+
+    while (1) {
+
+        int ret = read(STDIN_FILENO, buffer, sizeof(buffer) - 1);
+
+        if (ret < 0) {
+            perror("Consumer function: Unable to read from pipe");
+            exit(EXIT_FAILURE);
+        }
+        else if (ret == 0) {
+            //printf("Consumer function: Pipe closed. Why?\n");
+            exit(EXIT_SUCCESS);
+        }
+
+        buffer[ret] = '\0';
+
+        strcat(remaining, buffer);
+
+        char *start = remaining;
+
+        while (1) {
+
+            char *end = strchr(start, '\n');
+
+            if (end == nullptr) {
+                break;
+            }
+
+            *end = '\0';
+
+            //MYCUT START
+
+            char *dot = strchr(start, '.');
+
+            if (dot != nullptr) {
+                write(STDOUT_FILENO, dot + 1, strlen(dot + 1));
+            }
+
+            //MYCUT END
+
+            start = end + 1;
+        }
+
+        strcpy(remaining, start);
+
+    }
+
+
+}
