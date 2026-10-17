@@ -73,17 +73,110 @@ void consumer(int readFd) {
     }
 }
 
+void myTee(int fd, int outputFd) {
+    char buffer[1024];
+
+    while (1) {
+        int ret = read(fd, buffer, sizeof(buffer));
+
+        if (ret < 0) {
+            perror("Unable to read from pipe");
+            exit(EXIT_FAILURE);
+        }
+
+        if (ret == 0) {
+            exit(EXIT_SUCCESS);
+        }
+
+
+        int written = 0;
+
+        while (written < ret) {
+            int result = write(STDOUT_FILENO,
+                               buffer + written,
+                               ret - written);
+
+            if (result < 0) {
+                perror("Unable to write to stdout");
+                exit(EXIT_FAILURE);
+            }
+
+            if (result == 0) {
+                fprintf(stderr, "Write to stdout returned 0\n");
+                exit(EXIT_FAILURE);
+            }
+
+            written += result;
+        }
+
+        if (outputFd >= 0) {
+            written = 0;
+
+            while (written < ret) {
+                int result = write(outputFd,
+                                   buffer + written,
+                                   ret - written);
+
+                if (result < 0) {
+                    perror("Unable to write to file");
+                    exit(EXIT_FAILURE);
+                }
+
+                if (result == 0) {
+                    fprintf(stderr, "Write to file returned 0\n");
+                    exit(EXIT_FAILURE);
+                }
+
+                written += result;
+            }
+        }
+    }
+}
+
 int main(int argc, char **argv) {
 
-    if (argc != 2 && argc != 3) {
-        fprintf(stderr, "Usage: %s input_file [output_file]\n", argv[0]);
+    if (argc < 2) {
+        fprintf(stderr, "Usage: ./myprog [-o out_file_name] s1 [s2 ... sn]\n");
         return EXIT_FAILURE;
     }
 
-    //const char *filename = argv[1];
+    int firstSearchArg;
+
+    if (strcmp(argv[1], "-o") == 0) {
+        if (argc < 4) {
+            fprintf(stderr, "Usage: ./myprog -o out_file_name s1 [s2 ... sn]\n");
+            return EXIT_FAILURE;
+        }
+
+        firstSearchArg = 3;
+    }
+    else {
+        firstSearchArg = 1;
+    }
+
+    int patternSize = 1;
+
+    for (int i = firstSearchArg; i < argc; i++) {
+        patternSize += strlen(argv[i]) + 1;
+    }
+
+    char *pattern = new char[patternSize];
+    pattern[0] = '\0';
+
+    for (int i = firstSearchArg; i < argc; i++) {
+        if (i > firstSearchArg) {
+            strcat(pattern, "|");
+        }
+
+        strcat(pattern, argv[i]);
+    }
+
+    const char *filename = "names.txt";
 
     int mypipefdA[2];
     int mypipefdB[2];
+    int mypipefdC[2];
+    int mypipefdD[2];
 
     if (pipe(mypipefdA) < 0) {
         perror("Unable to create pipe A");
@@ -92,6 +185,16 @@ int main(int argc, char **argv) {
 
     if (pipe(mypipefdB) < 0) {
         perror("Unable to create pipe B");
+        return 1;
+    }
+
+    if (pipe(mypipefdC) < 0) {
+        perror("Unable to create pipe C");
+        return 1;
+    }
+
+    if (pipe(mypipefdD) < 0) {
+        perror("Unable to create pipe D");
         return 1;
     }
 
@@ -113,8 +216,12 @@ int main(int argc, char **argv) {
         close(mypipefdA[0]);
         close(mypipefdB[0]);
         close(mypipefdB[1]);
+        close(mypipefdC[0]);
+        close(mypipefdC[1]);
+        close(mypipefdD[0]);
+        close(mypipefdD[1]);
 
-        int file = open(argv[1], O_RDONLY);
+        int file = open(filename, O_RDONLY);
 
         if (file < 0) {
             perror("Unable to open input file for reading");
@@ -136,7 +243,7 @@ int main(int argc, char **argv) {
         execvp("sort", args);
 
         perror("execvp sort");
-        exit(EXIT_SUCCESS);
+        exit(EXIT_FAILURE);
 
 
     }
@@ -160,6 +267,10 @@ int main(int argc, char **argv) {
 
         close(mypipefdA[1]);
         close(mypipefdB[0]);
+        close(mypipefdC[0]);
+        close(mypipefdC[1]);
+        close(mypipefdD[0]);
+        close(mypipefdD[1]);
 
         dup2(mypipefdA[0], STDIN_FILENO);
         dup2(mypipefdB[1], STDOUT_FILENO);
@@ -214,30 +325,16 @@ int main(int argc, char **argv) {
         close(mypipefdA[0]);
         close(mypipefdA[1]);
         close(mypipefdB[1]);
+        close(mypipefdC[0]);
+        close(mypipefdD[0]);
+        close(mypipefdD[1]);
+
 
         dup2(mypipefdB[0], STDIN_FILENO);
+        dup2(mypipefdC[1], STDOUT_FILENO);
 
         close(mypipefdB[0]);
-
-        if (argc == 3) {
-            int file = open(argv[2], O_WRONLY | O_CREAT | O_TRUNC, 0644);
-
-            if (file < 0) {
-                perror("Unable to open output file for writing");
-                exit(EXIT_FAILURE);
-            }
-
-            if (dup2(file, STDOUT_FILENO) < 0) {
-                perror("dup2 stdout to outputfile");
-                close(file);
-                exit(EXIT_FAILURE);
-            }
-
-            close(file);
-
-            close(file);
-
-        }
+        close(mypipefdC[1]);
 
 
         char *args[] = {
@@ -256,12 +353,150 @@ int main(int argc, char **argv) {
 
     //PARENT ONLY CODE
 
+    //CREATION OF FOURTH CHILD -> grep command
+    pid_t child4 = fork();
+
+    if (child4 < 0) {
+        perror("Unable to create new child process(child 4)");
+        return 1;
+    }
+
+    if (child4 != 0) {
+        // PARENT
+
+
+    }else {
+        // CHILD 4
+        close(mypipefdA[0]);
+        close(mypipefdA[1]);
+        close(mypipefdB[0]);
+        close(mypipefdB[1]);
+        close(mypipefdC[1]);
+        close(mypipefdD[0]);
+
+
+        dup2(mypipefdC[0], STDIN_FILENO);
+        dup2(mypipefdD[1], STDOUT_FILENO);
+
+        close(mypipefdC[0]);
+        close(mypipefdD[1]);
+/*
+        char *searchString;
+
+        if (argc == 4) {
+            searchString = argv[3];
+        } else {
+            searchString = argv[1];
+        }
+*/
+        char *args[] = {
+            (char *)"grep",
+            (char *)"-E",
+            pattern,
+            nullptr
+        };
+
+        execvp("grep", args);
+
+        perror("execvp grep");
+        exit(EXIT_FAILURE);
+
+    }
+
+    //CREATION OF FIFTH CHILD -> tee command
+    pid_t child5 = fork();
+
+    if (child5 < 0) {
+        perror("Unable to create new child process(child 5)");
+        return 1;
+    }
+
+    if (child5 != 0) {
+        // PARENT
+
+
+    }else {
+        // CHILD 5
+        close(mypipefdA[0]);
+        close(mypipefdA[1]);
+        close(mypipefdB[0]);
+        close(mypipefdB[1]);
+        close(mypipefdC[0]);
+        close(mypipefdC[1]);
+        close(mypipefdD[1]);
+
+        dup2(mypipefdD[0], STDIN_FILENO);
+
+        close(mypipefdD[0]);
+
+        int outputFd = -1;
+
+        //if (argc == 4 && strcmp(argv[1], "-o") == 0) {
+        if (strcmp(argv[1], "-o") == 0){
+            outputFd = open(argv[2], O_WRONLY | O_CREAT | O_TRUNC, 0644);
+
+            if (outputFd < 0) {
+                perror("Unable to open output file");
+                exit(EXIT_FAILURE);
+            }
+        }
+
+        myTee(STDIN_FILENO, outputFd);
+
+
+/*
+        if (argc == 4 && strcmp(argv[1], "-o") == 0) {
+
+            int file = open(argv[2], O_WRONLY | O_CREAT | O_TRUNC, 0644);
+
+            if (file < 0) {
+                perror("Unable to open output file for writing");
+                exit(EXIT_FAILURE);
+            }
+
+            if (dup2(file, STDOUT_FILENO) < 0) {
+                perror("dup2 stdout to outputfile");
+                close(file);
+                exit(EXIT_FAILURE);
+            }
+            close(file);
+
+
+            char *args[] = {
+                (char *)"tee",
+                argv[2],
+                nullptr
+            };
+
+            execvp("tee", args);
+        }
+        else {
+            char *args[] = {
+                (char *)"tee",
+                nullptr
+            };
+
+            execvp("tee", args);
+        }
+
+        perror("execvp tee");
+        exit(EXIT_FAILURE);*/
+    }
+
     close(mypipefdA[1]);
     close(mypipefdA[0]);
 
     close(mypipefdB[1]);
     close(mypipefdB[0]);
 
+    close(mypipefdC[1]);
+    close(mypipefdC[0]);
+
+    close(mypipefdD[1]);
+    close(mypipefdD[0]);
+
+    wait(nullptr);
+    wait(nullptr);
     wait(nullptr);
     wait(nullptr);
     wait(nullptr);

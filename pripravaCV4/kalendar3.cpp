@@ -243,8 +243,6 @@ int main(int argc, char **argv) {
 
     if (child2 != 0) {
         // PARENT
-
-
     }else {
         // CHILD 2
         close(mypipefdA[1]);
