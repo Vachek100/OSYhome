@@ -91,6 +91,12 @@ int main( int t_argc, char **t_argv )
     char *l_host = nullptr;
 
     // parsing arguments
+    // Prochazi argumenty zadane pri spusteni klienta.
+    // Napr. ./socket_cl 127.0.0.1 12345
+    // Prvni argument bez pomlcky je host a druhy je port.
+    // inx = 1 je proste i = 1
+    // t_argc je to same jako argc
+    // t_argv je to same jako argv
     for ( int inx = 1; inx < t_argc; inx++ )
     {
         if ( strcmp( t_argv[ inx ], "-d" ) == 0 )
@@ -178,10 +184,12 @@ int main( int t_argc, char **t_argv )
     l_read_poll[ 1 ].fd = l_sock_server;
     l_read_poll[ 1 ].events = POLLIN;
 
+    srand(time(nullptr));
+
     // go!
     while ( 1 )
     {
-        srand(time(nullptr));
+
         char l_buf[ 128 ];
 
         // select from fds
@@ -192,6 +200,11 @@ int main( int t_argc, char **t_argv )
 
         if ( l_poll < 0 )
             break;
+
+        ///////////////////////////////////////////////////////////////////////////////////////////////////
+        ///     MY PLAYGROUND
+        ///////////////////////////////////////////////////////////////////////////////////////////////////
+
 
         // timeout - klient automaticky posle priklad
         if ( l_poll == 0 )
@@ -231,6 +244,8 @@ int main( int t_argc, char **t_argv )
                 log_msg( LOG_DEBUG, "Read %d bytes from stdin.", l_len );
             }
 
+            ///ZDE MOHU ZPRACOVAT PRECTENA DATA ZE STDINU
+
             // send data to server
             l_len = write( l_sock_server, l_buf, l_len );
             if ( l_len < 0 )
@@ -263,6 +278,8 @@ int main( int t_argc, char **t_argv )
             {
                 log_msg( LOG_DEBUG, "Read %d bytes from server.", l_len );
             }
+
+            ///ZDE MOHU ZPRACOVAVAT DATA ZE SERVERU
 
             // display on stdout
             l_len = write( STDOUT_FILENO, l_buf, l_len );
