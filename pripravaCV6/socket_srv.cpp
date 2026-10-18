@@ -114,168 +114,202 @@ const char g_help[] =
 //komunikace od clienta do kuchyne
 void communication_from_client_to_server(int l_sock_client)
 {
-    int mypipefdA[2];
-
-    if (pipe(mypipefdA) < 0) {
-        perror("Unable to create pipe A");
-        return;
-    }
-
-    // Vytvoření potomka, který spustí Python
-    pid_t python_child = fork();
-
-    if (python_child < 0) {
-        perror("Unable to create new child process(python_child)");
-        close(mypipefdA[0]);
-        close(mypipefdA[1]);
-        return;
-    }
-
-    if (python_child != 0) {
-        // PARENT
-
-    }else {
-        // CHILD
-
-        close(mypipefdA[1]);
-
-        dup2(mypipefdA[0], STDIN_FILENO);
-        dup2(l_sock_client, STDOUT_FILENO);
-
-        close(mypipefdA[0]);
-
-        char *args[] = {
-            (char *)"python3",
-            (char *)"-u",
-            (char *)"-c",
-            (char *)"import sys\nfor line in sys.stdin:\n    exec(line)",
-            nullptr
-        };
-
-        execvp("python3", args);
-        perror("execvp python");
-        exit(EXIT_FAILURE);
-
-
-    }
-
-    //PARENT ONLY CODE
-
+    // 1. PRIPRAVA
     pollfd l_read_poll;
-    //sleduje socket konkretniho clienta
     l_read_poll.fd = l_sock_client;
-    //jsou data pripravena na socketu ke cteni?
     l_read_poll.events = POLLIN;
 
     char buffer[256];
     char remaining[1024] = "";
 
+    char examples[3][256];
+    int example_count = 0;
+
+    // 2. HLAVNI CYKLUS - CEKANI NA DATA OD KLIENTA
     while (1)
     {
-        //server ceka
         int l_poll = poll(&l_read_poll, 1, -1);
 
         if (l_poll < 0)
         {
-            log_msg(LOG_ERROR, "Function poll failed!(communication_from_client_to_server)");
+            log_msg(LOG_ERROR, "Function poll failed!");
             break;
         }
 
-        if (l_read_poll.revents & POLLIN)
+        if (!(l_read_poll.revents & POLLIN))
         {
-
-            char python_code[512];
-
-            // Zde přečteme data od klienta(cisnik ziska pozadavek od clienta).
-
-            int ret = read(l_sock_client, buffer, sizeof(buffer) - 1);
-
-            if (ret < 0)
-            {
-                log_msg(LOG_ERROR, "Unable to read from client.(communication_from_client_to_server)");
+            if (l_read_poll.revents & (POLLHUP | POLLERR | POLLNVAL))
                 break;
+
+            continue;
+        }
+
+        // 3. CTENI Z KLIENT SOCKETU
+        int ret = read(l_sock_client, buffer, sizeof(buffer) - 1);
+
+        if (ret < 0)
+        {
+            log_msg(LOG_ERROR, "Unable to read from client.");
+            break;
+        }
+
+        if (ret == 0)
+        {
+            log_msg(LOG_INFO, "Client closed connection.");
+            break;
+        }
+
+        buffer[ret] = '\0';
+
+        // Kontrola kapacity remaining
+        size_t remaining_len = strlen(remaining);
+
+        if ((size_t)ret >= sizeof(remaining) - remaining_len)
+        {
+            log_msg(LOG_ERROR, "Input buffer is full.");
+            break;
+        }
+
+        strcat(remaining, buffer);
+
+        // 4. ROZDELENI DAT NA JEDNOTLIVE RADKY
+        char *start = remaining;
+
+        while (1)
+        {
+            char *end = strchr(start, '\n');
+
+            if (end == nullptr)
+                break;
+
+            *end = '\0';
+
+            // Odstraneni CR (\r)
+            int len = strlen(start);
+
+            if (len > 0 && start[len - 1] == '\r')
+                start[len - 1] = '\0';
+
+            // Preskoceni prazdneho radku
+            if (strlen(start) == 0)
+            {
+                start = end + 1;
+                continue;
             }
 
-            if (ret == 0)
+            // 5. KONTROLA CLOSE
+            if (strncasecmp(start, STR_CLOSE, strlen(STR_CLOSE)) == 0)
             {
-                log_msg(LOG_INFO, "Client closed connection.(communication_from_client_to_server)");
-                break;
+                log_msg(LOG_INFO, "Client requested close.");
+                return;
             }
 
-            buffer[ret] = '\0';
+            // 6. ULOZENI PRIKLADU
+            snprintf(
+                examples[example_count],
+                sizeof(examples[example_count]),
+                "%.255s",
+                start
+            );
 
-            strcat(remaining, buffer);
+            example_count++;
 
-            char *start = remaining;
+            // 7. PO TRECH PRIKLADECH SPOUSTIME PYTHON
+            if (example_count == 3)
+            {
+                int mypipefdA[2];
 
-
-            while (1) {
-                char *end = strchr(start, '\n');
-
-                if (end == nullptr) {
-                    break;
-                }
-
-                *end = '\0';
-
-                // Oříznutí případného CR (\r) na konci řádku
-                int len = strlen(start);
-                if (len > 0 && start[len - 1] == '\r') {
-                    start[len - 1] = '\0';
-                }
-
-                // Pokud klient poslal prázdný řádek přeskočíme ho
-                if (strlen(start) == 0) {
-                    start = end + 1;
-                    continue;
-                }
-
-                // Klient požádal o uzavření spojení se serverem.
-                if (strncasecmp(start, STR_CLOSE, strlen(STR_CLOSE)) == 0)
+                if (pipe(mypipefdA) < 0)
                 {
-                    log_msg(LOG_INFO, "Client closed connection with server.(communication_from_client_to_server)");
+                    perror("pipe");
                     return;
                 }
 
-                // TADY SE MĚNÍ TO, CO S ŘÁDKEM UDĚLÁŠ
+                pid_t python_child = fork();
 
-                snprintf(
-                    python_code,
-                    sizeof(python_code),
-                    "print(\"%.240s=\", %.240s)\n",
-                    start,
-                    start
-                );
-
-                fprintf(stderr, "POSILAM PYTHONU: %s", python_code);
-
-                ssize_t written = write(
-                    mypipefdA[1],
-                    python_code,
-                    strlen(python_code)
-                );
-
-                if (written < 0) {
-                    perror("write do roury");
-                    break;
+                if (python_child < 0)
+                {
+                    // Chyba při vytváření potomka
+                    perror("fork");
+                    close(mypipefdA[0]);
+                    close(mypipefdA[1]);
+                    return;
                 }
 
-                fprintf(stderr, "ZAPSANO DO ROURY: %zd bajtu\n", written);
-                start = end + 1;
+                if (python_child == 0)
+                {
+                    // CHILD: PRIPRAVA PYTHON PROCESU
 
+                    close(mypipefdA[1]);
 
+                    dup2(mypipefdA[0], STDIN_FILENO);
+                    dup2(l_sock_client, STDOUT_FILENO);
+
+                    close(mypipefdA[0]);
+                    close(l_sock_client);
+
+                    char *args[] = {
+                        (char *)"python3",
+                        (char *)"-u",
+                        (char *)"-c",
+                        (char *)"import sys\nfor line in sys.stdin:\n    exec(line)",
+                        nullptr
+                    };
+
+                    execvp("python3", args);
+                    perror("execvp python");
+                    exit(EXIT_FAILURE);
+                }
+
+                // PARENT: ODESLANI VSECH TRI PRIKLADU
+
+                close(mypipefdA[0]);
+
+                for (int i = 0; i < 3; i++)
+                {
+                    char python_code[512];
+
+                    snprintf(
+                        python_code,
+                        sizeof(python_code),
+                        "print(\"%.240s=\", %.240s)\n",
+                        examples[i],
+                        examples[i]
+                    );
+
+                    ssize_t written = write(
+                        mypipefdA[1],
+                        python_code,
+                        strlen(python_code)
+                    );
+
+                    if (written < 0)
+                    {
+                        perror("write do roury");
+                        break;
+                    }
+                }
+
+                // Python dostane EOF a muze skoncit.
+                close(mypipefdA[1]);
+
+                // Pockame na dokonceni potomka.
+                waitpid(python_child, NULL, 0);
+
+                // Pripravime se na dalsi trojici.
+                example_count = 0;
             }
 
-            strcpy(remaining, start);
-
+            // 8. PRECHOD NA DALSI RADek
+            start = end + 1;
         }
 
+        strcpy(remaining, start);
     }
 
-    close(mypipefdA[1]);
-    waitpid(python_child, NULL, 0);
-
 }
+
+
 
 
 int main( int t_argc, char **t_argv )

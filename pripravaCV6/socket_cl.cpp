@@ -22,6 +22,7 @@
 #include <sys/socket.h>
 #include <arpa/inet.h>
 #include <netdb.h>
+#include <ctime>
 
 #define STR_CLOSE               "close"
 
@@ -180,10 +181,35 @@ int main( int t_argc, char **t_argv )
     // go!
     while ( 1 )
     {
+        srand(time(nullptr));
         char l_buf[ 128 ];
 
         // select from fds
-        if ( poll( l_read_poll, 2, -1 ) < 0 ) break;
+        // ZDE U FUNKCE poll() JE TRETI PARAMETR TIMEOUT
+        // -1 ZNAMENA NEKONECNE DLOUHO
+        // 5000 CEKA MAXIMALNE 5 SEKUND
+        int l_poll = poll( l_read_poll, 2, 2000 );
+
+        if ( l_poll < 0 )
+            break;
+
+        // timeout - klient automaticky posle priklad
+        if ( l_poll == 0 )
+        {
+            int a = rand() % 100;
+            int b = rand() % 100;
+            char example[ 64 ];
+
+            if ( rand() % 2 == 0 )
+                snprintf( example, sizeof( example ), "%d+%d\n", a, b );
+            else
+                snprintf( example, sizeof( example ), "%d-%d\n", a, b );
+
+            write( l_sock_server, example, strlen( example ) );
+            continue;
+        }
+
+        
 
         // data on stdin?
         if ( l_read_poll[ 0 ].revents & POLLIN )
