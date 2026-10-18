@@ -236,7 +236,10 @@ void communication_from_client_to_server(int l_sock_client)
                     return;
                 }
 
-                if (python_child == 0)
+                if (python_child != 0) {
+                    //PARENT
+                }
+                else
                 {
                     // CHILD: PRIPRAVA PYTHON PROCESU
 
@@ -318,6 +321,10 @@ int main( int t_argc, char **t_argv )
     int l_port = 0;
 
     // parsing arguments
+    // proste a jednoduse prochazi to argumenty pri spusteni serveru ./socket_srv 12345(<- toto je ten l_port protoze ten argument nezacina '-')
+    // inx = 1 je proste i = 1
+    // t_argc je to same jako argc
+    // t_argv je to same jako argv
     for ( int inx = 1; inx < t_argc; inx++ )
     {
         if ( strcmp( t_argv[ inx ], "-d" ) == 0 )
@@ -340,6 +347,7 @@ int main( int t_argc, char **t_argv )
         }
     }
 
+    //PROSTE ERROR S PORTEM
     if ( l_port <= 0 )
     {
         log_msg( LOG_INFO, "Bad or missing port number %d!", l_port );
@@ -347,6 +355,8 @@ int main( int t_argc, char **t_argv )
         exit( EXIT_FAILURE );
     }
 
+    //KDYZ JE PORT SPRAVNY TOTO VYPISE TU ZPRAVU
+    //PORT MUSI BYT VETSI JAK 0
     log_msg( LOG_INFO, "Server will listen on port: %d.", l_port );
 
     // socket creation
@@ -404,6 +414,7 @@ int main( int t_argc, char **t_argv )
         while ( 1 ) // wait for new client
         {
             // select from fds
+            //ZDE TEN POLL CEKA PROSTE DO NEKONECNA
             int l_poll = poll( l_read_poll, 2, -1 );
 
             if ( l_poll < 0 )
@@ -415,6 +426,7 @@ int main( int t_argc, char **t_argv )
             if ( l_read_poll[ 0 ].revents & POLLIN )
             { // data on stdin
                 char buf[ 128 ];
+
 
                 int l_len = read( STDIN_FILENO, buf, sizeof( buf) );
                 if ( l_len == 0 )
@@ -469,6 +481,7 @@ int main( int t_argc, char **t_argv )
 
                 if (client_child < 0)
                 {
+                    //ERROR
                     perror("Unable to create new child process");
                     close(l_sock_client);
                 }
@@ -485,6 +498,7 @@ int main( int t_argc, char **t_argv )
                     //cisnik nepotrebuje komunikovat s kuchyni
                     close(l_sock_listen);
 
+                    //ZDE JE FUNKCE KDE CISNIK PREDAVA ZPRAVY OD KLIENTA DO KUCHYNE A ZASE ZPET
                     communication_from_client_to_server(l_sock_client);
 
                     //cisnik po uspesnem predani informaci do kuchyne uz nepotrebuje komunikovat s clientem
@@ -492,6 +506,7 @@ int main( int t_argc, char **t_argv )
                     exit(EXIT_SUCCESS);
                 }
                 // PARENT
+                //KUCHYNE NEPOTREBUJE KOMUNIKOVAT S KLIENTEM OD TOHO JE ZDE CISNIK(child1)
                 close(l_sock_client);
 
                 break;
