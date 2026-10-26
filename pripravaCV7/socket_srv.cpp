@@ -24,6 +24,7 @@
 #include <pthread.h>
 #include <vector>
 #include <algorithm>
+#include <semaphore.h>
 
 #define STR_CLOSE   "close"
 #define STR_QUIT    "quit"
@@ -47,7 +48,7 @@ struct Client
 };
 
 std::vector<Client> global_list_of_clients;
-pthread_mutex_t global_clients_mutex = PTHREAD_MUTEX_INITIALIZER;
+sem_t global_clients_semaphore;
 
 bool messages_locked = false;
 int lock_owner_socket = -1;
@@ -136,9 +137,9 @@ void* handleClient(void* arg)
     snprintf(new_client.nickname, sizeof(new_client.nickname),
              "%s", nickname);
 
-    pthread_mutex_lock(&global_clients_mutex);
+    sem_wait(&global_clients_semaphore);
     global_list_of_clients.push_back(new_client);
-    pthread_mutex_unlock(&global_clients_mutex);
+    sem_post(&global_clients_semaphore);
 
     char buffer[256];
     char message[256];
@@ -146,7 +147,7 @@ void* handleClient(void* arg)
     while (1)
     {
         //ZDE CTE ZPRAVU OD KLIENTA(client_socket)
-        int ret = read(client_socket, buffer, sizeof(buffer));
+        int ret = read(client_socket, buffer, sizeof(buffer)-1);
 
         if (ret <= 0)
             break;
@@ -163,7 +164,7 @@ void* handleClient(void* arg)
         // Klient chce pozastavit rozesílání
         if (strcmp(command, "lock:") == 0)
         {
-            pthread_mutex_lock(&global_clients_mutex);
+            sem_wait(&global_clients_semaphore);
 
             messages_locked = true;
             lock_owner_socket = client_socket;
@@ -186,7 +187,7 @@ void* handleClient(void* arg)
                 );
             }
 
-            pthread_mutex_unlock(&global_clients_mutex);
+            sem_post(&global_clients_semaphore);
 
             log_msg(LOG_INFO, "Client %s locked message broadcasting.", nickname);
             continue;
@@ -195,7 +196,7 @@ void* handleClient(void* arg)
         // Klient chce znovu povolit rozesílání
         if (strcmp(command, "unlock:") == 0)
         {
-            pthread_mutex_lock(&global_clients_mutex);
+            sem_wait(&global_clients_semaphore);
 
             if (lock_owner_socket == client_socket)
             {
@@ -220,13 +221,13 @@ void* handleClient(void* arg)
                     );
                 }
 
-                pthread_mutex_unlock(&global_clients_mutex);
+                sem_post(&global_clients_semaphore);
 
                 log_msg(LOG_INFO, "Client %s unlocked message broadcasting.", nickname);
             }
             else
             {
-                pthread_mutex_unlock(&global_clients_mutex);
+                sem_post(&global_clients_semaphore);
             }
 
             continue;
@@ -253,7 +254,7 @@ void* handleClient(void* arg)
         write(STDOUT_FILENO, message, message_length);
 
         // Send message to all connected clients - ROZESILA TO ZPRAVU VSEM KLIENTUM OBSAZENYCH V GLOBALNIM LISTU(global_list_of_clients)
-        pthread_mutex_lock(&global_clients_mutex);
+        sem_wait(&global_clients_semaphore);
 
         // Pokud je rozesílání pozastavené,
         // zprávy může rozesílat pouze klient, který ho pozastavil.
@@ -273,7 +274,7 @@ void* handleClient(void* arg)
         }
 
 
-        pthread_mutex_unlock(&global_clients_mutex);
+        sem_post(&global_clients_semaphore);
 
         if (ret >= (int)strlen(STR_CLOSE) &&
             strncasecmp(buffer, STR_CLOSE, strlen(STR_CLOSE)) == 0)
@@ -283,7 +284,7 @@ void* handleClient(void* arg)
     }
 
     // Odstraneni klienta ze seznamu
-    pthread_mutex_lock(&global_clients_mutex);
+    sem_wait(&global_clients_semaphore);
 
     // Pokud se odpojil klient, který uzamkl rozesílání,
     // musíme rozesílání znovu povolit.
@@ -305,7 +306,7 @@ void* handleClient(void* arg)
     if (it != global_list_of_clients.end())
         global_list_of_clients.erase(it);
 
-    pthread_mutex_unlock(&global_clients_mutex);
+    sem_post(&global_clients_semaphore);
 
     close(client_socket);
     return NULL;
@@ -317,6 +318,8 @@ void* handleClient(void* arg)
 int main( int t_argc, char **t_argv )
 {
     int l_port = 0;
+
+
 
     // parsing arguments
     for ( int inx = 1; inx < t_argc; inx++ )
@@ -349,6 +352,13 @@ int main( int t_argc, char **t_argv )
     }
 
     log_msg( LOG_INFO, "Server will listen on port: %d.", l_port );
+
+
+    if (sem_init(&global_clients_semaphore, 0, 1) == -1)
+    {
+        perror("sem_init");
+        return 1;
+    }
 
     // socket creation
     int l_sock_listen = socket( AF_INET, SOCK_STREAM, 0 );
@@ -456,7 +466,7 @@ int main( int t_argc, char **t_argv )
                     server_message_length = sizeof(server_message) - 1;
 
                 // Send message to all connected clients - ROZESILA TO ZPRAVU VSEM KLIENTUM OBSAZENYCH V GLOBALNIM LISTU(global_list_of_clients)
-                pthread_mutex_lock(&global_clients_mutex);
+                sem_wait(&global_clients_semaphore);
 
                 for (const Client& client : global_list_of_clients)
                 {
@@ -466,7 +476,7 @@ int main( int t_argc, char **t_argv )
                         log_msg(LOG_ERROR, "Unable to send message to clients.");
                 }
 
-                pthread_mutex_unlock(&global_clients_mutex);
+                sem_post(&global_clients_semaphore);
 
             }
 
@@ -491,7 +501,6 @@ int main( int t_argc, char **t_argv )
                 getpeername( l_sock_client, ( sockaddr * ) &l_srv_addr, &l_lsa );
                 log_msg( LOG_INFO, "Client IP: '%s'  port: %d",
                                  inet_ntoa( l_srv_addr.sin_addr ), ntohs( l_srv_addr.sin_port ) );
-
 
                 //ukazatel ktery ukazuje na adresu cisla socketu(l_sock_client)
                 int* pointer_to_client_socket_num = new int(l_sock_client);
@@ -525,6 +534,8 @@ int main( int t_argc, char **t_argv )
 
 
     } // while ( 1 )
+
+    //sem_destroy(&global_clients_semaphore);
 
     return 0;
 } // main

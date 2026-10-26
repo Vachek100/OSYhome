@@ -1,0 +1,203 @@
+SEMAFORY – POZNÁMKY K OSY
+=========================
+
+Základní funkce POSIX anonymního semaforu
+-------------------------------------------
+Hlavička:
+    #include <semaphore.h>
+
+Proměnná:
+    sem_t global_clients_semaphore;
+
+Inicializace:
+    sem_init(&global_clients_semaphore, 0, 1);
+
+Parametry sem_init:
+- první argument: adresa semaforu,
+- druhý argument 0: semafor se sdílí mezi vlákny stejného procesu
+  (není určen ke sdílení mezi různými procesy),
+- třetí argument 1: počáteční hodnota semaforu.
+
+Čekání / zabrání semaforu:
+    sem_wait(&global_clients_semaphore);
+
+Pokud je hodnota semaforu kladná, sem_wait ji sníží a pokračuje.
+Pokud je hodnota 0, volající vlákno čeká, dokud někdo semafor neuvolní.
+
+Uvolnění:
+    sem_post(&global_clients_semaphore);
+
+sem_post zvýší hodnotu semaforu a případně probudí čekající vlákno.
+
+Zničení:
+    sem_destroy(&global_clients_semaphore);
+
+Semafor znič až ve chvíli, kdy ho už žádné vlákno nepoužívá. V programu s
+detached vlákny to znamená, že musíš nejprve zajistit, aby všechna tato
+vlákna skončila. Nedávej sem_destroy bezmyšlenkovitě do běžící smyčky.
+
+3. Kritická sekce
+-----------------
+Kritická sekce je část kódu, která přistupuje ke sdíleným datům a kterou
+nechceme nechat současně vykonávat více vláken.
+
+Typický vzor:
+
+    sem_wait(&global_clients_semaphore);
+
+    // Kritická sekce: pracujeme se sdíleným seznamem klientů.
+    global_list_of_clients.push_back(new_client);
+
+    sem_post(&global_clients_semaphore);
+
+Vždy se snaž, aby každému úspěšnému sem_wait odpovídalo sem_post.
+Jinak může semafor zůstat na nule a ostatní vlákna se zaseknou.
+
+Pokud mezi sem_wait a sem_post nastane chyba nebo předčasný návrat, je
+potřeba zajistit, aby se semafor přesto správně uvolnil.
+
+4. Proč ho potřebujeme v našem socket serveru?
+---------------------------------------------
+V serveru existuje jeden společný seznam:
+    std::vector<Client> global_list_of_clients;
+
+Každé klientské vlákno může:
+- přidat klienta do seznamu,
+- projít seznam a poslat zprávu ostatním,
+- odstranit klienta při odpojení.
+
+Současně hlavní vlákno může seznam procházet, když rozesílá zprávu napsanou
+do terminálu serveru.
+
+Bez synchronizace by například jedno vlákno mohlo procházet vector, zatímco
+jiné vlákno mění jeho obsah. To může vést k chybám, poškození dat nebo
+nedefinovanému chování.
+
+Proto chráníme operace se seznamem takto:
+
+    sem_wait(&global_clients_semaphore);
+    // čtení nebo změna global_list_of_clients
+    sem_post(&global_clients_semaphore);
+
+Pravidlo: když přistupuješ ke sdílenému seznamu, drž se stejného semaforu.
+Nesmíš zapomenout chránit ani čtení, nejen přidávání a mazání.
+
+5. Jak to funguje krok za krokem?
+---------------------------------
+Po sem_init(..., 0, 1) má semafor hodnotu 1.
+
+1. Vlákno A zavolá sem_wait: hodnota se změní z 1 na 0. A vstoupí do
+   kritické sekce.
+2. Vlákno B zavolá sem_wait: hodnota je 0, takže B musí čekat.
+3. Vlákno A dokončí práci a zavolá sem_post: hodnota se uvolní a B může
+   pokračovat.
+4. B provede svou kritickou sekci a nakonec zavolá sem_post.
+
+Díky tomu nepracují dvě vlákna v této chráněné části současně.
+
+6. Semafor vs. mutex
+--------------------
+Mutex:
+- běžně slouží k tomu, aby v danou chvíli drželo zámek jen jedno vlákno,
+- má koncept vlastníka: odemykat by ho mělo vlákno, které ho zamklo,
+- typické funkce: pthread_mutex_lock, pthread_mutex_unlock.
+
+Semafor:
+- má čítač povolení,
+- sem_wait povolení odebere a sem_post ho vrátí,
+- obecný semafor nemá stejný koncept vlastníka jako mutex,
+- může povolit i více současných vstupů, pokud má počáteční hodnotu větší než 1.
+
+V tomto serveru používáme semafor s hodnotou 1 jako jednoduchou ochranu kritické
+sekce, takže v tomto konkrétním použití se chová podobně jako mutex. Není to
+ale úplně stejný nástroj.
+
+Převod z mutexu na semafor:
+    pthread_mutex_lock(&m);      -> sem_wait(&s);
+    pthread_mutex_unlock(&m);   -> sem_post(&s);
+
+    pthread_mutex_init(&m, ...); -> sem_init(&s, 0, 1);
+    pthread_mutex_destroy(&m);   -> sem_destroy(&s);
+
+Nejde o univerzální náhradu pro každé použití mutexu; záleží na účelu a
+správném zacházení se semaforem.
+
+7. Pozor: dva různé druhy „lock“
+--------------------------------
+V našem programu jsou dvě nezávislé věci:
+
+A) semafor:
+    sem_wait(...)
+    sem_post(...)
+
+Chrání sdílený seznam a stav před současným přístupem vláken.
+
+B) aplikační příkazy:
+    lock:
+    unlock:
+
+Ty určují, jestli server rozesílá běžné zprávy klientů. Stav drží proměnné
+messages_locked a lock_owner_socket.
+
+Klientský příkaz lock: NEZAMYKÁ semafor. Kdybychom při čekání na unlock:
+nechali semafor zamčený, ostatní vlákna by se nemusela dostat k práci a server
+by se mohl zablokovat.
+
+8. Časté chyby
+--------------
+- Zapomenuté sem_post: ostatní vlákna mohou čekat navždy.
+- Dvojité sem_wait bez odpovídajícího sem_post: může dojít k deadlocku.
+- Opakované sem_init při každém klientovi: inicializuj jednou před spuštěním
+  klientských vláken.
+- sem_destroy, když semafor ještě používají vlákna: nebezpečné.
+- Chránit jen zápis do vectoru, ale ne jeho procházení: i čtení při souběžné
+  změně seznamu je problém.
+- Volat sem_post na nesprávném místě nebo pro každé sem_wait neudělat přesně
+  odpovídající uvolnění.
+- Držet semafor zbytečně dlouho: ostatní vlákna pak čekají. V tvém kódu se
+  při rozesílání zpráv drží semafor i během write; pro jednoduchou školní
+  úlohu to může být přijatelné, ale u robustního serveru je třeba řešit i
+  pomalé/odpojené klienty a případná částečná odeslání.
+
+9. Krátký příklad
+-----------------
+#include <semaphore.h>
+#include <vector>
+
+sem_t s;
+std::vector<int> numbers;
+
+int main()
+{
+    if (sem_init(&s, 0, 1) == -1) {
+        perror("sem_init");
+        return 1;
+    }
+
+    sem_wait(&s);
+    numbers.push_back(42);
+    sem_post(&s);
+
+    // V reálném programu semafor znič až poté, co ho nepoužívá žádné vlákno.
+    sem_destroy(&s);
+    return 0;
+}
+
+V tomto zjednodušeném příkladu není žádné další vlákno, takže zničení na konci
+je bezpečné. V serveru s klientskými vlákny je nutné nejprve zajistit jejich
+ukončení.
+
+10. Co si zapamatovat na cvičení
+--------------------------------
+- sem_init(&s, 0, 1): vytvoří anonymní semafor pro vlákna stejného procesu
+  s jedním povolením.
+- sem_wait(&s): vezmi povolení; při hodnotě 0 čekej.
+- sem_post(&s): vrať povolení.
+- sem_destroy(&s): znič semafor až po ukončení všech uživatelů.
+- Kritická sekce: část kódu přistupující ke sdíleným datům.
+- Hodnota 1 se používá k ochraně jedné kritické sekce najednou.
+- Mutex i semafor mohou chránit kritickou sekci, ale nejsou totožné.
+- V tvém serveru semafor chrání seznam klientů; lock:/unlock: řídí rozesílání
+  zpráv a jsou to dvě odlišné věci.
+
+
