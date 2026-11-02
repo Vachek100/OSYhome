@@ -59,7 +59,7 @@
 // ***************************************************************************
 //                      SHARED DATA
 
-#define N 3
+#define N 10
 
 struct SharedData {
 //    board[RADKU - ROWS][SLOUPCU - COLS]
@@ -689,7 +689,7 @@ int main( int t_argc, char **t_argv )
             }
 
             // select from fds
-            //ZDE TEN POLL CEKA PROSTE DO NEKONECNA
+            //ZDE TEN POLL CEKA
             int l_poll = poll( l_read_poll, 3, 1000 );
 
             if ( l_poll < 0 )
