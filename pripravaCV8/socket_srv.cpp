@@ -61,12 +61,35 @@
 
 #define N 10
 
+#define MAX_ROWS 100
+#define MAX_COLS 100
+
 struct SharedData {
-//    board[RADKU - ROWS][SLOUPCU - COLS]
-    char board[9][9];
+    // Mapa mistnosti
+    char board[MAX_ROWS][MAX_COLS];
+
+    // Skutecne rozmery mistnosti
+    int rows;
+    int cols;
+
+    // Pozice robota
+    int robot_row;
+    int robot_col;
+
+    // Smer robota
+    char robot_direction;
+
+    // Informace o konci hry
+    int game_over;
+    pid_t end_pid;
+
+    // Informace o hracich
     pid_t pids[N];
+
+    // Semafory pro stridani hracu
     sem_t sems[N];
 
+    // Aktualni hrac na tahu
     int current_player;
 };
 
@@ -131,14 +154,29 @@ const char g_help[] =
 // ***************************************************************************
 
 // INICIALIZACE HRY
-void init_game(SharedData *game)
+void init_game(SharedData *game, int rows, int cols)
 {
-    // Inicializace hracího pole
-    for (int i = 0; i < 9; i++) {
-        for (int j = 0; j < 9; j++) {
-            game->board[i][j] = '.';
+    game->rows = rows;
+    game->cols = cols;
+
+
+    // Inicializace mapy
+    for (int i = 0; i < rows; i++) {
+        for (int j = 0; j < cols; j++) {
+            game->board[i][j] = ' ';
         }
     }
+
+    // Inicializace pozice robota
+    game->robot_row = rows / 2;
+    game->robot_col = cols / 2;
+
+    // Vychozi smer robota
+    game->robot_direction = 'D';
+
+    // Inicializace konce hry
+    game->game_over = 0;
+    game->end_pid = 0;
 
     // Inicializace PID
     for (int i = 0; i < N; i++) {
@@ -197,82 +235,134 @@ void pass_turn(SharedData *game, int current_player)
 
 void send_board(int socket, SharedData *game)
 {
-    char buffer[256];
+    char buffer[8192];
     int offset = 0;
 
-    offset += snprintf(buffer + offset, sizeof(buffer) - offset,
-                       "  A B C D E F G H I\n");
-
-    for (int i = 0; i < 9; i++)
+    // Zobrazeni mapy
+    for (int i = 0; i < game->rows; i++)
     {
-        offset += snprintf(buffer + offset, sizeof(buffer) - offset,
-                           "%d ", i + 1);
-
-        for (int j = 0; j < 9; j++)
+        for (int j = 0; j < game->cols; j++)
         {
-            offset += snprintf(buffer + offset, sizeof(buffer) - offset,
-                               "%c ", game->board[i][j]);
+            char symbol;
+
+            // Je na tomto policku robot?
+            if (i == game->robot_row &&
+                j == game->robot_col)
+            {
+                switch (game->robot_direction)
+                {
+                    case 'U': symbol = '^'; break;
+                    case 'D': symbol = 'v'; break;
+                    case 'L': symbol = '<'; break;
+                    case 'R': symbol = '>'; break;
+                    default:  symbol = 'R'; break;
+                }
+            }
+            // Je policko natrene?
+            else if (game->board[i][j] == '#')
+            {
+                symbol = '#';
+            }
+            // Jinak je policko prazdne
+            else
+            {
+                symbol = '.';
+            }
+
+            offset += snprintf(
+                buffer + offset,
+                sizeof(buffer) - offset,
+                "%c ",
+                symbol
+            );
         }
 
-        offset += snprintf(buffer + offset, sizeof(buffer) - offset, "\n");
+        offset += snprintf(
+            buffer + offset,
+            sizeof(buffer) - offset,
+            "\n"
+        );
     }
 
+    // Odeslani mapy klientovi
     write(socket, buffer, offset);
 }
 
-int process_move(SharedData *game, char *command)
+enum MoveResult {
+    MOVE_INVALID,
+    MOVE_OK,
+    MOVE_GAME_OVER
+};
+
+MoveResult process_move(SharedData *game, char *command)
 {
-    char column;
-    int row;
-    char letter;
-    char extra;
+    int new_row = game->robot_row;
+    int new_col = game->robot_col;
 
-    // Nacteni prikazu
-    if (sscanf(command, "%c-%d-%c%c",
-               &column, &row, &letter, &extra) != 3)
+    // Zpracovani prikazu
+    if (strcasecmp(command, "UP") == 0)
     {
-        printf("Neplatny format tahu!\n");
-        return 0;
+        new_row--;
+        game->robot_direction = 'U';
+    }
+    else if (strcasecmp(command, "DOWN") == 0)
+    {
+        new_row++;
+        game->robot_direction = 'D';
+    }
+    else if (strcasecmp(command, "LEFT") == 0)
+    {
+        new_col--;
+        game->robot_direction = 'L';
+    }
+    else if (strcasecmp(command, "RIGHT") == 0)
+    {
+        new_col++;
+        game->robot_direction = 'R';
+    }
+    else
+    {
+        printf("Neplatny prikaz!\n");
+        return MOVE_INVALID;
     }
 
-    // Prevod malych pismen na velka
-    if (column >= 'a' && column <= 'i')
-        column -= 32;
-
-    if (letter >= 'a' && letter <= 'z')
-        letter -= 32;
-
-    // Kontrola souradnic
-    if (column < 'A' || column > 'I' || row < 1 || row > 9)
+    // Kontrola narazu do zdi
+    if (new_row < 0 ||
+        new_row >= game->rows ||
+        new_col < 0 ||
+        new_col >= game->cols)
     {
-        printf("Neplatna pozice!\n");
-        return 0;
+        game->game_over = 1;
+        game->end_pid = getpid();
+
+        printf("Robot narazil do zdi!\n");
+
+        return MOVE_GAME_OVER;
     }
 
-    // Prevod na indexy pole
-    int col_index = column - 'A';
-    int row_index = row - 1;
-
-    // Kontrola pismena
-    if (letter < 'A' || letter > 'Z')
+    // Kontrola jiz natreneho policka
+    if (game->board[new_row][new_col] == '#')
     {
-        printf("Neplatne pismeno!\n");
-        return 0;
+        game->game_over = 1;
+        game->end_pid = getpid();
+
+        printf("Robot najel na natrene misto!\n");
+
+        return MOVE_GAME_OVER;
     }
 
-    // Kontrola, zda je policko volne
-    if (game->board[row_index][col_index] != '.')
-    {
-        printf("Policko je obsazene!\n");
-        return 0;
-    }
+    // Natreni puvodni pozice robota
+    game->board[game->robot_row][game->robot_col] = '#';
 
-    // Zapis pismena
-    game->board[row_index][col_index] = letter;
+    // Presun robota
+    game->robot_row = new_row;
+    game->robot_col = new_col;
 
-    printf("Tah: %c-%d-%c\n", column, row, letter);
+    printf("Robot se presunul na [%d][%d]\n",
+           game->robot_row,
+           game->robot_col);
 
-    return 1;
+    return MOVE_OK;
 }
 
 void remove_player(SharedData *game, int player_index)
@@ -283,7 +373,7 @@ void remove_player(SharedData *game, int player_index)
     game->pids[player_index] = 0;
 
     // Pokud odchazi aktualni hrac, predame tah dal
-    if (game->current_player == player_index)
+    if (!game->game_over && game->current_player == player_index)
     {
         pass_turn(game, player_index);
     }
@@ -303,7 +393,12 @@ void broadcast_game(SharedData *game, int client_sockets[N])
         if (client_sockets[i] == -1)
             continue;
 
-        if (game->current_player == i)
+        if (game->game_over) {
+            snprintf(message, sizeof(message),
+                     "HRA SKONCILA! Konec zpusobil hrac PID %d.\n",
+                     game->end_pid);
+        }
+        else if (game->current_player == i)
         {
             snprintf(message, sizeof(message),
                      "\nJsi na tahu!\n");
@@ -340,7 +435,7 @@ void communication_from_client_to_server(int l_sock_client, SharedData *game, in
     bool disconnected = false;
 
     // HLAVNI CYKLUS - CEKANI NA TAH
-    while (!disconnected)
+    while (!disconnected & !game->game_over)
     {
         /*
         // 1. Cekani na svuj tah
@@ -355,7 +450,7 @@ void communication_from_client_to_server(int l_sock_client, SharedData *game, in
         // 1. Cekani na svuj tah a kontrola odpojeni klienta
         bool turn_received = false;
 
-        while (!disconnected && !turn_received)
+        while (!disconnected && !turn_received && !game->game_over)
         {
             // Zkusime ziskat semafor bez blokovani
             if (sem_trywait(&game->sems[player_index]) == 0)
@@ -408,7 +503,7 @@ void communication_from_client_to_server(int l_sock_client, SharedData *game, in
         // 3. Cekani na prikaz od klienta
         bool turn_finished = false;
 
-        while (!turn_finished && !disconnected)
+        while (!turn_finished && !disconnected && !game->game_over)
         {
             int l_poll = poll(&l_read_poll, 1, -1);
 
@@ -492,15 +587,29 @@ void communication_from_client_to_server(int l_sock_client, SharedData *game, in
                 }
 
                 // 7. Zpracovani tahu
-                if (process_move(game, start))
+                MoveResult result = process_move(game, start);
+
+                if (result == MOVE_OK)
                 {
-                    // Predani tahu dalsimu hraci
+                    // Platny pohyb - predame tah
                     pass_turn(game, player_index);
+
                     notify_parent(notify_fd);
+
                     turn_finished = true;
                     start = end + 1;
                     break;
                 }
+                else if (result == MOVE_GAME_OVER)
+                {
+                    // Hra skoncila - uz nepredavame tah
+                    notify_parent(notify_fd);
+
+                    turn_finished = true;
+                    start = end + 1;
+                    break;
+                }
+
 
                 // Neplatny tah - hrac zustava na tahu
                 start = end + 1;
@@ -524,31 +633,42 @@ int main( int t_argc, char **t_argv )
 
     int l_port = 0;
 
+    int rows = 0;
+    int cols = 0;
+
     // parsing arguments
     // proste a jednoduse prochazi to argumenty pri spusteni serveru ./socket_srv 12345(<- toto je ten l_port protoze ten argument nezacina '-')
     // inx = 1 je proste i = 1
     // t_argc je to same jako argc
     // t_argv je to same jako argv
-    for ( int inx = 1; inx < t_argc; inx++ )
+    for (int inx = 1; inx < t_argc; inx++)
     {
-        if ( strcmp( t_argv[ inx ], "-d" ) == 0 )
+        if (strcmp(t_argv[inx], "-d") == 0)
         {
             g_debug = LOG_DEBUG;
         }
-
-        if ( strcmp( t_argv[ inx ], "-h" ) == 0 )
+        else if (strcmp(t_argv[inx], "-h") == 0)
         {
-            printf( g_help, t_argv[ 0 ] );
-            exit( EXIT_SUCCESS );
+            printf(g_help, t_argv[0]);
+            exit(EXIT_SUCCESS);
         }
+    }
 
-        if ( *t_argv[ inx ] != '-' )
-        {
-            if ( l_port == 0 )
-            {
-                l_port = atoi( t_argv[ inx ] );
-            }
-        }
+    // Kontrola poctu argumentu
+    if (t_argc != 3)
+    {
+        printf("Pouziti: %s port rowsxcols\n", t_argv[0]);
+        exit(EXIT_FAILURE);
+    }
+
+    // Nacteni portu
+    l_port = atoi(t_argv[1]);
+
+    // Nacteni rozmeru mistnosti
+    if (sscanf(t_argv[2], "%dx%d", &rows, &cols) != 2)
+    {
+        printf("Neplatny rozmer mistnosti!\n");
+        exit(EXIT_FAILURE);
     }
 
     //PROSTE ERROR S PORTEM
@@ -636,7 +756,7 @@ int main( int t_argc, char **t_argv )
     }
 
     // INICIALIZACE HRY
-    init_game( shared_memory );
+    init_game( shared_memory, rows,cols );
 
     // Sockety jednotlivych klientu
     int client_sockets[N];
@@ -716,6 +836,10 @@ int main( int t_argc, char **t_argv )
                     // Kontrola odpojenych klientu
                     for (int i = 0; i < N; i++)
                     {
+                        if (shared_memory->game_over) {
+                            broadcast_game(shared_memory, client_sockets);
+                        }
+
                         if (shared_memory->pids[i] == 0 &&
                             client_sockets[i] != -1)
                         {
@@ -724,7 +848,9 @@ int main( int t_argc, char **t_argv )
                         }
                     }
 
-                    broadcast_game(shared_memory, client_sockets);
+                    if (shared_memory->game_over) {
+                        broadcast_game(shared_memory, client_sockets);
+                    }
                 }
             }
 
