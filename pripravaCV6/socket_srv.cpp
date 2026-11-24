@@ -122,8 +122,7 @@ void communication_from_client_to_server(int l_sock_client)
     char buffer[256];
     char remaining[1024] = "";
 
-    char examples[3][256];
-    int example_count = 0;
+
 
     // 2. HLAVNI CYKLUS - CEKANI NA DATA OD KLIENTA
     while (1)
@@ -204,19 +203,11 @@ void communication_from_client_to_server(int l_sock_client)
                 return;
             }
 
-            // 6. ULOZENI PRIKLADU
-            snprintf(
-                examples[example_count],
-                sizeof(examples[example_count]),
-                "%.255s",
-                start
-            );
+            char *resolution= start;
 
-            example_count++;
+            printf("Received resolution: '%s'\n", resolution);
+            fflush(stdout);
 
-            // 7. PO TRECH PRIKLADECH SPOUSTIME PYTHON
-            if (example_count == 3)
-            {
                 int mypipefdA[2];
 
                 if (pipe(mypipefdA) < 0)
@@ -251,16 +242,27 @@ void communication_from_client_to_server(int l_sock_client)
                     close(mypipefdA[0]);
                     close(l_sock_client);
 
+                    char resolution_arg[64];
+
+                    snprintf(
+                        resolution_arg,
+                        sizeof(resolution_arg),
+                        "%.*s!",
+                        61,
+                        resolution
+                    );
+
                     char *args[] = {
-                        (char *)"python3",
-                        (char *)"-u",
-                        (char *)"-c",
-                        (char *)"import sys\nfor line in sys.stdin:\n    exec(line)",
+                        (char *)"magick",
+                        (char *)"podzim.jpg",
+                        (char *)"-resize",
+                        resolution_arg,
+                        (char *)"jpg:-",
                         nullptr
                     };
 
-                    execvp("python3", args);
-                    perror("execvp python");
+                    execvp("magick", args);
+                    perror("execvp magick");
                     exit(EXIT_FAILURE);
                 }
 
@@ -268,42 +270,13 @@ void communication_from_client_to_server(int l_sock_client)
 
                 close(mypipefdA[0]);
 
-                for (int i = 0; i < 3; i++)
-                {
-                    char python_code[512];
-
-                    snprintf(
-                        python_code,
-                        sizeof(python_code),
-                        "print(\"%.240s=\", %.240s)\n",
-                        examples[i],
-                        examples[i]
-                    );
-
-                    ssize_t written = write(
-                        mypipefdA[1],
-                        python_code,
-                        strlen(python_code)
-                    );
-
-                    if (written < 0)
-                    {
-                        perror("write do roury");
-                        break;
-                    }
-                }
-
                 // Python dostane EOF a muze skoncit.
                 close(mypipefdA[1]);
 
                 // Pockame na dokonceni potomka.
                 waitpid(python_child, NULL, 0);
+            return;
 
-                // Pripravime se na dalsi trojici.
-                example_count = 0;
-            }
-
-            // 8. PRECHOD NA DALSI RADek
             start = end + 1;
         }
 

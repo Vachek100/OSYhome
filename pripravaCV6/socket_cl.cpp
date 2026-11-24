@@ -23,6 +23,7 @@
 #include <arpa/inet.h>
 #include <netdb.h>
 #include <ctime>
+#include <fcntl.h>
 
 #define STR_CLOSE               "close"
 
@@ -89,6 +90,8 @@ int main( int t_argc, char **t_argv )
 {
     int l_port = 0;
     char *l_host = nullptr;
+    char *resolution = nullptr;
+
 
     // parsing arguments
     // Prochazi argumenty zadane pri spusteni klienta.
@@ -120,7 +123,13 @@ int main( int t_argc, char **t_argv )
             {
                 l_port = atoi( t_argv[ inx ] );
             }
+            else if (resolution == nullptr)
+            {
+                resolution = t_argv[inx];
+            }
         }
+
+
     }
 
     if ( l_host == nullptr || l_port <= 0 )
@@ -176,15 +185,24 @@ int main( int t_argc, char **t_argv )
 
     log_msg( LOG_INFO, "Enter 'close' to close application." );
 
-    // list of fd sources
-    pollfd l_read_poll[ 2 ];
+    char l_request[128];
 
-    l_read_poll[ 0 ].fd = STDIN_FILENO;
-    l_read_poll[ 0 ].events = POLLIN;
-    l_read_poll[ 1 ].fd = l_sock_server;
-    l_read_poll[ 1 ].events = POLLIN;
+    snprintf(l_request, sizeof(l_request), "%s\n", resolution);
 
-    srand(time(nullptr));
+    if (write(l_sock_server, l_request, strlen(l_request)) < 0)
+    {
+        perror("write resolution");
+        close(l_sock_server);
+        return EXIT_FAILURE;
+    }
+    
+    int image_fd = open("image.img", O_WRONLY | O_CREAT | O_TRUNC, 0644);
+
+    if (image_fd < 0) {
+        perror("open image.jpg");
+        close(l_sock_server);
+        return EXIT_FAILURE;
+    }
 
     // go!
     while ( 1 )
@@ -192,102 +210,57 @@ int main( int t_argc, char **t_argv )
 
         char l_buf[ 128 ];
 
-        // select from fds
-        // ZDE U FUNKCE poll() JE TRETI PARAMETR TIMEOUT
-        // -1 ZNAMENA NEKONECNE DLOUHO
-        // 5000 CEKA MAXIMALNE 5 SEKUND
-        int l_poll = poll( l_read_poll, 2, 2000 );
-
-        if ( l_poll < 0 )
-            break;
 
         ///////////////////////////////////////////////////////////////////////////////////////////////////
         ///     MY PLAYGROUND
         ///////////////////////////////////////////////////////////////////////////////////////////////////
 
 
-        // timeout - klient automaticky posle priklad
-        if ( l_poll == 0 )
-        {
-            int a = rand() % 100;
-            int b = rand() % 100;
-            char example[ 64 ];
-
-            if ( rand() % 2 == 0 )
-                snprintf( example, sizeof( example ), "%d+%d\n", a, b );
-            else
-                snprintf( example, sizeof( example ), "%d-%d\n", a, b );
-
-            write( l_sock_server, example, strlen( example ) );
-            continue;
-        }
-
-        
-
-        // data on stdin?
-        if ( l_read_poll[ 0 ].revents & POLLIN )
-        {
-            //  read from stdin
-            int l_len = read( STDIN_FILENO, l_buf, sizeof( l_buf ) );
-            if ( l_len == 0 )
-            {
-                log_msg( LOG_DEBUG, "Stdin closed." );
-                break;
-            }
-            if ( l_len < 0 )
-            {
-                log_msg( LOG_ERROR, "Unable to read from stdin." );
-                break;
-            }
-            else
-            {
-                log_msg( LOG_DEBUG, "Read %d bytes from stdin.", l_len );
-            }
-
-            ///ZDE MOHU ZPRACOVAT PRECTENA DATA ZE STDINU
-
-            // send data to server
-            l_len = write( l_sock_server, l_buf, l_len );
-            if ( l_len < 0 )
-            {
-                log_msg( LOG_ERROR, "Unable to send data to server." );
-                break;
-            }
-            else
-            {
-                log_msg( LOG_DEBUG, "Sent %d bytes to server.", l_len );
-            }
-        }
-
         // data from server?
-        if ( l_read_poll[ 1 ].revents & POLLIN )
-        {
+
+
             // read data from server
-            int l_len = read( l_sock_server, l_buf, sizeof( l_buf ) );
-            if ( l_len == 0 )
+            int l_serverlen = read( l_sock_server, l_buf, sizeof( l_buf ) );
+            if ( l_serverlen == 0 )
             {
                 log_msg( LOG_DEBUG, "Server closed socket." );
                 break;
             }
-            else if ( l_len < 0 )
+            else if ( l_serverlen < 0 )
             {
                 log_msg( LOG_ERROR, "Unable to read data from server." );
                 break;
             }
             else
             {
-                log_msg( LOG_DEBUG, "Read %d bytes from server.", l_len );
+                log_msg( LOG_DEBUG, "Read %d bytes from server.", l_serverlen );
             }
 
             ///ZDE MOHU ZPRACOVAVAT DATA ZE SERVERU
 
-            // display on stdout
-            l_len = write( STDOUT_FILENO, l_buf, l_len );
-            if ( l_len < 0 )
+            // Ulozeni prijatych bajtu do obrazku
+            int written = 0;
+
+            while (written < l_serverlen)
             {
-                log_msg( LOG_ERROR, "Unable to write to stdout." );
-                break;
+                int ret = write(
+                    image_fd,
+                    l_buf + written,
+                    l_serverlen - written
+                );
+
+                if (ret <= 0)
+                {
+                    perror("write image");
+                    break;
+                }
+
+                written += ret;
             }
+
+            printf("Prijato %d bajtu obrazku.\n", l_serverlen);
+
+
 
             // request to close?
             if ( strncasecmp( l_buf, STR_CLOSE, strlen( STR_CLOSE ) ) == 0 )
@@ -295,11 +268,24 @@ int main( int t_argc, char **t_argv )
                 log_msg( LOG_INFO, "Connection will be closed..." );
                 break;
             }
-        }
+
     }
 
+    close(image_fd);
+
+    close(l_sock_server);
     // close socket
     close( l_sock_server );
+
+    char *args[] = {
+        (char *)"display",
+        (char *)"image.img",
+        nullptr
+    };
+
+    execvp("display", args);
+    perror("execvp display");
+    exit(EXIT_FAILURE);
 
     return 0;
 } // main

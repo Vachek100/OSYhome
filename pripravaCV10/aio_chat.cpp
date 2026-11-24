@@ -32,6 +32,7 @@
 #include <fcntl.h>
 #include <sys/stat.h>
 
+
 #define STR_CLOSE   "close"
 #define STR_QUIT    "quit"
 
@@ -111,8 +112,17 @@ Díky tomu ví vysílací vlákno, kolik bajtů má odeslat.
 struct Message
 {
     int length;
+    int sender;
     char data[BUFLEN];
 };
+
+struct Client
+{
+    int socket;
+    char nick[32];
+};
+
+std::vector<Client> g_clients;
 
 /*
  Budeme mít dva deskriptory stejné fronty:
@@ -141,14 +151,6 @@ void *broadcast_thread(void *)
 
     while (true)
     {
-        //mq_receive(fronta, buffer, velikost_bufferu, priorita);
-        /*
-         g_mq_receive	Deskriptor fronty, ze které čteme (TAKZE TO JE FD NA CTENI)
-        (char *)&msg	Adresa proměnné, do které uložíme zprávu
-        sizeof(msg)	    Maximální velikost přijímané zprávy
-        nullptr	        Prioritu zprávy nepotřebujeme
-         */
-        // < 0 kdyz nastane chyba preskoc
         if (mq_receive(g_mq_receive,
                        (char *)&msg,
                        sizeof(msg), nullptr) < 0)
@@ -156,33 +158,146 @@ void *broadcast_thread(void *)
             continue;
         }
 
+        // Odstranime konec radku ze zpravy.
+        char text[BUFLEN];
+        int length = msg.length;
+        if (length >= BUFLEN)
+            length = BUFLEN - 1;
+        if (length < 0)
+            length = 0;
+
+        memcpy(text, msg.data, length);
+        text[length] = '\0';
+        text[strcspn(text, "\r\n")] = '\0';
+
         pthread_mutex_lock(&g_clients_mutex);
 
-        //Procházení připojených klientů
-        for (int inx = STDERR_FILENO + 1; inx < MAXFD; inx++)
+        // Najdeme klienta, ktery zpravu poslal.
+        int sender_index = -1;
+        for (size_t i = 0; i < g_clients.size(); i++)
         {
-            //Kontrola, zda je klient připojený
-            if (g_aio_cbs[inx].aio_fildes != -1)
+            if (g_clients[i].socket == msg.sender)
             {
-                //Odeslání zprávy klientovi
-                //write(deskriptor, data, pocet_bajtu);
-                /*
-                g_aio_cbs[inx].aio_fildes	Socket klienta
-                msg.data	                Text zprávy
-                msg.length	                Počet bajtů, které chceme odeslat
-                */
-                write(g_aio_cbs[inx].aio_fildes,
-                      msg.data, msg.length);
+                sender_index = (int)i;
+                break;
+            }
+        }
+
+        // Zpravy ze stdin nejsou soucasti klientského chatu.
+        if (sender_index == -1)
+        {
+            pthread_mutex_unlock(&g_clients_mutex);
+            continue;
+        }
+
+        Client &sender = g_clients[sender_index];
+
+        // 1A: Prvni zprava klienta je jeho prezdivka.
+        if (sender.nick[0] == '\0')
+        {
+            if (text[0] != '\0' && strlen(text) < sizeof(sender.nick))
+            {
+                strncpy(sender.nick, text, sizeof(sender.nick) - 1);
+                sender.nick[sizeof(sender.nick) - 1] = '\0';
+
+                char output[BUFLEN];
+                snprintf(output, sizeof(output), "Server: tvoje prezdivka je %s\n", sender.nick);
+                write(sender.socket, output, strlen(output));
+            }
+            else
+            {
+                const char *error = "Server: neplatna prezdivka.\n";
+                write(sender.socket, error, strlen(error));
+            }
+
+            pthread_mutex_unlock(&g_clients_mutex);
+            continue;
+        }
+
+        // 1D: Prikaz list vypise vsechny pripojene klienty.
+        if (strcmp(text, "list") == 0)
+        {
+            char output[BUFLEN];
+            int used = snprintf(output, sizeof(output), "Pripojeni klienti:\n");
+
+            for (size_t i = 0; i < g_clients.size() && used < (int)sizeof(output); i++)
+            {
+                if (g_clients[i].nick[0] != '\0')
+                {
+                    int written = snprintf(output + used, sizeof(output) - used,
+                                           "%s\n", g_clients[i].nick);
+                    if (written < 0)
+                        break;
+                    used += written;
+                }
+            }
+
+            write(sender.socket, output, strlen(output));
+            pthread_mutex_unlock(&g_clients_mutex);
+            continue;
+        }
+
+        char output[BUFLEN + 40];
+
+        // 1B + 1C: @nick zprava posle zpravu pouze konkretnimu klientovi.
+        if (text[0] == '@')
+        {
+            char *recipient_nick = text + 1;
+            char *message_text = strchr(recipient_nick, ' ');
+
+            if (message_text == nullptr || message_text[1] == '\0')
+            {
+                const char *error = "Server: pouziti: @nick zprava\n";
+                write(sender.socket, error, strlen(error));
+                pthread_mutex_unlock(&g_clients_mutex);
+                continue;
+            }
+
+            *message_text = '\0';
+            message_text++;
+
+            int recipient_index = -1;
+            for (size_t i = 0; i < g_clients.size(); i++)
+            {
+                if (strcmp(g_clients[i].nick, recipient_nick) == 0)
+                {
+                    recipient_index = (int)i;
+                    break;
+                }
+            }
+
+            if (recipient_index == -1)
+            {
+                snprintf(output, sizeof(output),
+                         "Server: klient '%s' nebyl nalezen.\n", recipient_nick);
+                write(sender.socket, output, strlen(output));
+            }
+            else
+            {
+                snprintf(output, sizeof(output), "%s: %s\n",
+                         sender.nick, message_text);
+                write(g_clients[recipient_index].socket, output, strlen(output));
+            }
+        }
+        else
+        {
+            // Bez @nick se zprava rozesle vsem ostatnim klientum.
+            snprintf(output, sizeof(output), "%s: %s\n", sender.nick, text);
+
+            for (size_t i = 0; i < g_clients.size(); i++)
+            {
+                if (g_clients[i].nick[0] != '\0' && g_clients[i].socket != msg.sender)
+                {
+                    write(g_clients[i].socket, output, strlen(output));
+                }
             }
         }
 
         pthread_mutex_unlock(&g_clients_mutex);
-
     }
 
     return nullptr;
 }
-
 
 // Callback funkce pro SIGEV_THREAD
 void aio_callback(union sigval t_val)
@@ -211,6 +326,18 @@ void aio_callback(union sigval t_val)
         pthread_mutex_lock(&g_clients_mutex);
 
         log_msg( LOG_INFO, "Socket %d closed.", lp_cb->aio_fildes );
+
+        // Najdeme klienta v seznamu
+        for (size_t i = 0; i < g_clients.size(); i++)
+        {
+            if (g_clients[i].socket == lp_cb->aio_fildes)
+            {
+                // Odstraníme klienta ze seznamu
+                g_clients.erase(g_clients.begin() + i);
+                break;
+            }
+        }
+
         close( lp_cb->aio_fildes );
         lp_cb->aio_fildes = -1;
 
@@ -241,6 +368,7 @@ void aio_callback(union sigval t_val)
         Message msg;
 
         msg.length = l_ret;
+        msg.sender = lp_cb->aio_fildes;
 
         // Zkopírování textu
         // memcpy(cil, zdroj, pocet_bajtu);
@@ -251,6 +379,8 @@ void aio_callback(union sigval t_val)
         */
         // lp_buf ukazuje na buffer, do kterého předtím AIO načetlo data od klienta.
         memcpy(msg.data, lp_buf, l_ret);
+        msg.data[l_ret] = '\0';
+
 
         // Vložení zprávy do fronty
         /*
@@ -261,10 +391,7 @@ void aio_callback(union sigval t_val)
         */
         if (mq_send(g_mq_send, (const char *)&msg, sizeof(msg), 0) < 0)
         {
-            if (errno == EAGAIN)
-            {
-                // Fronta je plná, zprávu zahodíme.
-            }
+            perror("mq_send");
         }
 
 
@@ -478,7 +605,7 @@ int main( int t_argc, char **t_argv )
         cb.aio_buf = g_aio_buffers[ inx ];
 
         // Maximální počet načítaných bajtů BUFLEN je 512
-        cb.aio_nbytes = BUFLEN;
+        cb.aio_nbytes = BUFLEN - 1;
         cb.aio_reqprio = 0;
         cb.aio_lio_opcode = LIO_NOP;
 
@@ -530,6 +657,11 @@ int main( int t_argc, char **t_argv )
         pthread_mutex_lock(&g_clients_mutex);
 
         g_aio_cbs[ l_sock_client ].aio_fildes = l_sock_client;
+
+        Client client{};
+        client.socket = l_sock_client;
+
+        g_clients.push_back(client);
 
         pthread_mutex_unlock(&g_clients_mutex);
 
